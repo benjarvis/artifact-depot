@@ -1,0 +1,24 @@
+{
+	"name": "artifact-depot",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"customizations": {
+		"vscode": {
+			"settings": {},
+			"extensions": [
+				"anthropic.claude-code"
+			]
+		}
+	},
+	"initializeCommand": "mkdir -p \"${localEnv:HOME}${localEnv:USERPROFILE}/.claude\"",
+	"mounts": [
+		"source=artifact-depot-worktrees,target=/worktrees,type=volume",
+		"source=artifact-depot-build,target=/build,type=volume"
+	],
+	"appPort": [],
+	"forwardPorts": [],
+	"privileged": true,
+	"workspaceMount": "source=${localWorkspaceFolder},target=/artifact-depot,type=bind",
+	"workspaceFolder": "/artifact-depot"
+}

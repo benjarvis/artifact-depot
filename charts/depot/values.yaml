@@ -1,0 +1,270 @@
+## Default values for the depot chart.
+## This file deploys the "standalone" profile by default: a single replica
+## backed by embedded redb and a filesystem blob store on a PVC.
+##
+## To deploy other profiles, pass one of the bundled values overlays:
+##   helm install depot ./charts/depot -f charts/depot/values-distributed.yaml
+##   helm install depot ./charts/depot -f charts/depot/values-aws.yaml
+
+image:
+  repository: depot
+  tag: ""              # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+## Replica count.
+## - Use 1 for kvStore.type=redb (embedded, single-writer).
+## - Use >=3 for kvStore.type=dynamodb (horizontally scalable).
+replicaCount: 1
+
+## -----------------------------------------------------------------------------
+## Depot configuration
+## -----------------------------------------------------------------------------
+
+config:
+  ## Admin password set on first start. If empty, a random password is
+  ## generated and printed to the depot log. Stored in a Kubernetes Secret.
+  defaultAdminPassword: "admin"
+
+  ## Encryption key for KV store values at rest. Should be a long random string
+  ## in production. Changing this after data is written prevents startup.
+  ## Leave empty to use depot's (insecure) built-in fallback key.
+  serverSecret: ""
+
+  ## Expose a dedicated /metrics listener on this address. Set to empty to
+  ## disable.
+  metricsListen: "0.0.0.0:9090"
+
+## -----------------------------------------------------------------------------
+## KV store backend
+## -----------------------------------------------------------------------------
+
+kvStore:
+  ## Backend type: "redb" (embedded, single-node) or "dynamodb".
+  type: redb
+
+  redb:
+    ## Mount path inside the container for the redb directory.
+    path: /data/kv
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+
+  dynamodb:
+    tablePrefix: depot
+    region: us-east-1
+    ## Optional custom endpoint for DynamoDB-compatible services
+    ## (e.g. ScyllaDB Alternator: "http://scylladb:8000"). Leave empty
+    ## for real AWS DynamoDB.
+    endpointUrl: ""
+    maxRetries: 3
+    connectTimeoutSecs: 3
+    readTimeoutSecs: 10
+    retryMode: standard
+
+## -----------------------------------------------------------------------------
+## Blob store
+##
+## Blob stores in depot are registered via REST API, not the config file.
+## When blobStore.enabled is true, a post-install Helm hook Job creates
+## the default store after depot starts.
+## -----------------------------------------------------------------------------
+
+blobStore:
+  ## Whether the post-install Job should create a blob store.
+  enabled: true
+  ## Store name (referenced by repositories).
+  name: default
+  ## Store backend type: "file" or "s3".
+  type: file
+
+  file:
+    ## Mount path inside the container for blob data.
+    root: /data/blobs
+    persistence:
+      enabled: true
+      size: 100Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+
+  s3:
+    bucket: depot
+    ## Custom endpoint for S3-compatible stores (e.g. Garage, MinIO).
+    ## Leave empty for real AWS S3.
+    endpoint: ""
+    region: us-east-1
+    prefix: ""
+    ## Static S3 credentials. For real AWS S3 you typically want to set these
+    ## separately (see aws.* below) or use IRSA on EKS. For S3-compatible
+    ## on-prem storage, set them here -- they are stored in a Secret.
+    accessKey: ""
+    secretKey: ""
+    ## Reference an existing Secret instead of inline credentials.
+    ## The Secret must contain keys "access-key" and "secret-key".
+    existingSecret: ""
+
+## -----------------------------------------------------------------------------
+## AWS credentials (for DynamoDB and real AWS S3)
+##
+## Depot reads AWS credentials from standard env vars via the AWS SDK default
+## credential chain.
+## -----------------------------------------------------------------------------
+
+aws:
+  ## When true, AWS_ACCESS_KEY_ID/SECRET/REGION env vars are injected into
+  ## depot pods from the Secret below (or the existingSecret if set).
+  enabled: false
+  accessKeyId: ""
+  secretAccessKey: ""
+  region: ""
+  ## Reference an existing Secret with keys "access-key-id" and
+  ## "secret-access-key". Falls back to aws.* fields if empty.
+  existingSecret: ""
+
+## -----------------------------------------------------------------------------
+## Service and networking
+## -----------------------------------------------------------------------------
+
+service:
+  type: ClusterIP
+  port: 8080
+  ## Service port for /metrics listener (when config.metricsListen is set).
+  metricsPort: 9090
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: depot.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+## -----------------------------------------------------------------------------
+## Tracing / OpenTelemetry
+## -----------------------------------------------------------------------------
+
+tracing:
+  enabled: false
+  ## OTLP gRPC endpoint. When observability.enabled is true, this defaults
+  ## to the in-chart OTel Collector.
+  otlpEndpoint: ""
+  serviceName: depot
+  deploymentEnvironment: ""
+  samplingRatio: 1.0
+
+## -----------------------------------------------------------------------------
+## Prometheus ServiceMonitor (requires prometheus-operator CRDs)
+## -----------------------------------------------------------------------------
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+  scrapeTimeout: 10s
+
+## -----------------------------------------------------------------------------
+## Pod scheduling
+## -----------------------------------------------------------------------------
+
+resources: {}
+  # limits:
+  #   cpu: 2000m
+  #   memory: 2Gi
+  # requests:
+  #   cpu: 500m
+  #   memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+## Liveness / readiness probes hit GET /api/v1/health.
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 5
+  readiness:
+    enabled: true
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+podSecurityContext:
+  fsGroup: 65534
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+## -----------------------------------------------------------------------------
+## Embedded observability stack (optional)
+##
+## When enabled, spins up a simple OTel Collector + Tempo + Loki + MinIO +
+## Grafana alongside depot. Each component is a single-replica Deployment
+## intended for demo and development, not production HA. For production,
+## install the upstream Grafana / Tempo / Loki charts separately and set
+## tracing.otlpEndpoint to point at your own OTel Collector.
+## -----------------------------------------------------------------------------
+
+observability:
+  enabled: false
+
+  otelCollector:
+    image: otel/opentelemetry-collector-contrib:0.115.0
+    resources: {}
+
+  tempo:
+    image: grafana/tempo:2
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""
+    resources: {}
+
+  loki:
+    image: grafana/loki:3.4.0
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""
+    resources: {}
+
+  minio:
+    image: minio/minio:latest
+    rootUser: minio
+    rootPassword: minio123
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: ""
+    resources: {}
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    anonymousAccess: true
+    ## Expose via a Service of this type (ClusterIP | NodePort | LoadBalancer).
+    serviceType: ClusterIP
+    resources: {}

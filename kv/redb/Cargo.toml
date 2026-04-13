@@ -1,0 +1,21 @@
+[package]
+name = "depot-kv-redb"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "depot_kv_redb"
+path = "src/lib.rs"
+
+[dependencies]
+depot-core = { path = "../../core" }
+async-trait = "0.1"
+blake3 = "1"
+futures = "0.3"
+redb = "2"
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

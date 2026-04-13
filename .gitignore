@@ -1,0 +1,35 @@
+# Build output
+/target/
+/build/
+
+# Database and blob storage (runtime data)
+*.redb
+/blobs/
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rust
+**/*.rs.bk
+
+# Frontend (built automatically)
+ui/frontend/node_modules/
+ui/frontend/dist/
+ui/frontend/public/THIRD-PARTY-NOTICES
+
+# UI test artifacts
+ui/frontend/.nyc_output/
+ui/frontend/playwright-report/
+ui/frontend/test-results/
+ui/frontend/blobs/
+
+# Config with possible secrets
+/depotd.toml

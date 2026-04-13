@@ -1,0 +1,154 @@
+/* SPDX-FileCopyrightText: 2026 Artifact Depot Contributors */
+/* SPDX-License-Identifier: Apache-2.0 */
+
+:root {
+  font-family: system-ui, -apple-system, sans-serif;
+  color-scheme: light dark;
+
+  /* ── Fonts ── */
+  --font-sans: system-ui, -apple-system, sans-serif;
+  --font-mono: 'Courier New', Courier, monospace;
+
+  /* ══════════════════════════════════════
+     Light mode (default)
+     ══════════════════════════════════════ */
+
+  /* Primary brand – interactive elements (buttons, links, active states) */
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-text: #fff;
+
+  /* Semantic – danger */
+  --color-danger: #c00;
+  --color-danger-hover: #a00;
+  --color-danger-text: #fff;
+
+  /* Semantic – success */
+  --color-success: #2e7d32;
+  --color-success-bg: #e8f5e9;
+
+  /* Semantic – warning / orange */
+  --color-orange: #e65100;
+  --color-orange-bg: #fff3e0;
+
+  /* Semantic – informational / blue */
+  --color-blue: #1565c0;
+  --color-blue-bg: #e3f2fd;
+  --color-blue-light: #bbdefb;
+
+  /* Text hierarchy */
+  --color-text: #213547;
+  --color-text-strong: #333;
+  --color-text-secondary: #555;
+  --color-text-muted: #666;
+  --color-text-faint: #888;
+  --color-text-disabled: #999;
+
+  /* Surfaces & backgrounds */
+  --color-bg: #fff;
+  --color-bg-page: #fff;
+  --color-bg-subtle: #fafafa;
+  --color-bg-muted: #f5f5f5;
+  --color-bg-hover: #e8f0fe;
+  --color-bg-input: #fff;
+  --color-bg-disabled: #f0f0f0;
+
+  /* Borders */
+  --color-border: #e0e0e0;
+  --color-border-strong: #ccc;
+
+  /* Banners */
+  --color-danger-banner-bg: #fff0f0;
+  --color-danger-banner-border: #fcc;
+  --color-success-banner-bg: #f0fff0;
+  --color-success-banner-border: #cfc;
+
+  /* Header (dark strip in both modes) */
+  --color-header-bg: #1a1a2e;
+  --color-header-text: #fff;
+  --color-header-text-muted: rgba(255, 255, 255, 0.7);
+  --color-header-border: rgba(255, 255, 255, 0.3);
+
+  /* Shadows & overlays */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.15);
+  --color-overlay: rgba(0, 0, 0, 0.4);
+
+  /* Radii */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+
+  /* Z-index */
+  --z-modal: 1000;
+}
+
+/* ══════════════════════════════════════
+   Dark mode overrides
+   ══════════════════════════════════════ */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Primary brand – visible on dark surfaces, WCAG AA with white text */
+    --color-primary: #5b6abf;
+    --color-primary-hover: #7b8cde;
+    --color-primary-text: #fff;
+
+    /* Semantic – danger */
+    --color-danger: #ff6b6b;
+    --color-danger-hover: #ff4444;
+    --color-danger-text: #fff;
+
+    /* Semantic – success */
+    --color-success: #66bb6a;
+    --color-success-bg: #1b3a1b;
+
+    /* Semantic – warning / orange */
+    --color-orange: #ffb74d;
+    --color-orange-bg: #3a2a10;
+
+    /* Semantic – informational / blue */
+    --color-blue: #64b5f6;
+    --color-blue-bg: #1a2a3e;
+    --color-blue-light: #2a3a5e;
+
+    /* Text hierarchy – light on dark */
+    --color-text: #e0e0e0;
+    --color-text-strong: #f0f0f0;
+    --color-text-secondary: #c0c0c8;
+    --color-text-muted: #a8a8b4;
+    --color-text-faint: #9090a0;
+    --color-text-disabled: #686878;
+
+    /* Surfaces & backgrounds */
+    --color-bg: #1e1e2e;
+    --color-bg-page: #16161e;
+    --color-bg-subtle: #252535;
+    --color-bg-muted: #2a2a3a;
+    --color-bg-hover: #2a3050;
+    --color-bg-input: #252535;
+    --color-bg-disabled: #2a2a3a;
+
+    /* Borders */
+    --color-border: #3a3a4a;
+    --color-border-strong: #505060;
+
+    /* Banners */
+    --color-danger-banner-bg: #3a1a1a;
+    --color-danger-banner-border: #5a2a2a;
+    --color-success-banner-bg: #1a3a1a;
+    --color-success-banner-border: #2a5a2a;
+
+    /* Header – slightly darker than page bg */
+    --color-header-bg: #12121e;
+    --color-header-text: #e0e0e0;
+    --color-header-text-muted: rgba(224, 224, 224, 0.7);
+    --color-header-border: rgba(224, 224, 224, 0.2);
+
+    /* Shadows & overlays – stronger on dark */
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.5);
+    --color-overlay: rgba(0, 0, 0, 0.6);
+  }
+}

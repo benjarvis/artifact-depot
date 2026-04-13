@@ -1,0 +1,18 @@
+default_admin_password = "admin"
+server_secret = "change-me-to-a-random-secret"
+metrics_listen = "0.0.0.0:9090"
+
+[http]
+listen = "0.0.0.0:8080"
+
+[kv_store]
+type = "dynamodb"
+table_prefix = "depot"
+region = "us-east-1"
+# No endpoint_url -- uses real AWS DynamoDB.
+# AWS credentials are read from environment (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).
+
+[tracing]
+otlp_endpoint = "http://otel-collector:4317"
+service_name = "depot"
+deployment_environment = "aws"

@@ -1,0 +1,25 @@
+[http]
+listen = "0.0.0.0:8080"
+
+[kv_store]
+type = "redb"
+path = "build/demo/depot.redb"
+
+# LDAP authentication is configured via the Settings API:
+#   PUT /api/v1/settings/ldap
+# Example:
+#   curl -X PUT http://localhost:8080/api/v1/settings/ldap \
+#     -H 'Authorization: Basic ...' \
+#     -H 'Content-Type: application/json' \
+#     -d '{
+#       "url": "ldap://ldap.example.com:389",
+#       "bind_dn": "cn=depot-svc,ou=services,dc=example,dc=com",
+#       "bind_password": "service-password",
+#       "user_base_dn": "ou=people,dc=example,dc=com",
+#       "user_filter": "(uid={username})",
+#       "group_base_dn": "ou=groups,dc=example,dc=com",
+#       "group_filter": "(member={dn})",
+#       "group_name_attr": "cn",
+#       "group_role_mapping": {"depot-admins": "admin", "depot-readers": "read-only"},
+#       "fallback_to_builtin": true
+#     }'

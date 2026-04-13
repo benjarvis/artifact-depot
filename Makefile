@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 Artifact Depot Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+.PHONY: all build test debug release debug_test release_test lint fmt demo demo-data coverage docker clean notices \
+	notices-cargo notices-npm \
+	lint-cargo-licenses lint-cargo-advisories lint-npm-licenses lint-npm-audit lint-reuse lint-fmt lint-clippy \
+	test-debug test-ui test-dynamodb test-docker-auth
+
+all: test
+
+# Individual lint checks (parallelizable with make -j)
+lint-cargo-licenses:
+	@command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny
+	@echo "Checking Rust dependency licenses..."
+	@output=$$(cargo deny check licenses 2>&1) || { echo "$$output"; exit 1; }
+
+lint-cargo-advisories:
+	@command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny
+	@echo "Auditing Rust dependencies for vulnerabilities..."
+	@output=$$(cargo deny check advisories 2>&1) || { echo "$$output"; exit 1; }
+
+lint-npm-licenses:
+	@echo "Checking frontend dependency licenses..."
+	@cd ui/frontend && npx --yes license-checker --failOn 'GPL-2.0;GPL-3.0;AGPL-3.0;AGPL-1.0;SSPL-1.0;EUPL-1.1;EUPL-1.2' > /dev/null
+
+lint-npm-audit:
+	@echo "Auditing frontend dependencies for vulnerabilities..."
+	@output=$$(cd ui/frontend && npm audit 2>&1) || { echo "$$output"; exit 1; }
+
+lint-reuse:
+	@echo "Checking REUSE compliance..."
+	@output=$$(reuse lint 2>&1) || { echo "$$output"; exit 1; }
+
+lint-fmt:
+	@echo "Checking formatting..."
+	@output=$$(cargo fmt --check 2>&1) || { echo "$$output"; exit 1; }
+
+lint-clippy:
+	@echo "Running clippy..."
+	@output=$$(cargo clippy -- -D warnings 2>&1) || { echo "$$output"; exit 1; }
+
+# Third-party license notices (parallelizable with make -j)
+notices-cargo:
+	@echo "Gathering Rust license notices..."
+	@output=$$(bash scripts/generate-notices-cargo.sh 2>&1) || { echo "$$output"; exit 1; }
+
+notices-npm:
+	@echo "Gathering npm license notices..."
+	@output=$$(bash scripts/generate-notices-npm.sh 2>&1) || { echo "$$output"; exit 1; }
+
+notices: notices-cargo notices-npm
+	@echo "Generating third-party notices..."
+	@output=$$(bash scripts/generate-notices.sh 2>&1) || { echo "$$output"; exit 1; }
+
+# All lint checks
+lint: lint-cargo-licenses lint-cargo-advisories lint-npm-licenses lint-npm-audit lint-reuse lint-fmt lint-clippy
+
+# Build targets
+debug: notices
+	@echo "Building depot..."
+	@DEPOT_INSTRUMENT_FRONTEND=1 cargo build
+
+release: notices
+	cargo build --release
+
+build: debug
+
+# Individual test suites (parallelizable with make -j)
+test-debug: debug lint
+	@echo "Running debug tests..."
+	@start=$$(date +%s); output=$$(DEPOT_INSTRUMENT_FRONTEND=1 cargo test -q 2>&1) || { echo "$$output"; exit 1; }; echo "  debug tests passed in $$(($$(date +%s) - $$start))s"
+
+test-ui: debug lint
+	@echo "Running UI tests..."
+	@start=$$(date +%s); output=$$(bash scripts/ui-test.sh --skip-build 2>&1) || { echo "$$output"; exit 1; }; echo "  UI tests passed in $$(($$(date +%s) - $$start))s"
+
+test-dynamodb: debug lint
+	@echo "Running DynamoDB tests..."
+	@start=$$(date +%s); output=$$(bash scripts/ext-test.sh dynamodb 2>&1) || { echo "$$output"; exit 1; }; echo "  DynamoDB tests passed in $$(($$(date +%s) - $$start))s"
+
+test-docker-auth: debug lint
+	@echo "Running Docker auth tests..."
+	@start=$$(date +%s); output=$$(bash scripts/ext-test.sh docker-auth 2>&1) || { echo "$$output"; exit 1; }; echo "  Docker auth tests passed in $$(($$(date +%s) - $$start))s"
+
+# All test suites
+test: test-debug test-ui test-dynamodb test-docker-auth
+
+# Legacy targets
+debug_test: debug
+	DEPOT_INSTRUMENT_FRONTEND=1 cargo test -q
+
+release_test: release
+	cargo test -q --release
+
+# Demo
+demo: debug
+	@echo "Starting demo server..."
+	@bash scripts/demo.sh
+
+demo-data: debug
+	@echo "Starting demo server with seeded data..."
+	@bash scripts/demo.sh true
+
+# Formatting
+fmt:
+	cargo fmt
+
+# Coverage (Rust via llvm-cov + TypeScript via Istanbul/NYC)
+coverage:
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov
+	bash scripts/coverage.sh
+
+# Docker
+docker:
+	docker buildx build -t depot .
+
+# Utility
+clean:
+	cargo clean
+	rm -rf build/demo

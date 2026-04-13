@@ -1,0 +1,22 @@
+apiVersion: v2
+name: depot
+description: Artifact Depot -- Rust-native, scale-out artifact repository manager
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/quantum/artifact-depot
+sources:
+  - https://github.com/quantum/artifact-depot
+keywords:
+  - artifact
+  - repository
+  - docker
+  - npm
+  - pypi
+  - helm
+  - apt
+  - yum
+  - cargo
+  - go
+maintainers:
+  - name: Quantum

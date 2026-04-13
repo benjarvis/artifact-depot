@@ -1,0 +1,35 @@
+[package]
+name = "depot-format-docker"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "depot_format_docker"
+path = "src/lib.rs"
+
+[dependencies]
+depot-core = { path = "../../core", features = ["http", "repo"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+metrics = "0.24"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+blake3 = "1"
+sha2 = "0.10"
+bytes = "1"
+futures = "0.3"
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"], default-features = false }
+
+[dev-dependencies]
+depot-test-support = { path = "../../test-support" }
+tokio = { version = "1", features = ["full", "test-util"] }
+http-body-util = "0.1"
+axum = "0.8"
+wiremock = "0.6"
+sha2 = "0.10"

@@ -1,0 +1,29 @@
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+ingester:
+  max_block_duration: 5m
+  flush_check_period: 10s
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: tempo
+      endpoint: minio:9000
+      access_key: minioadmin
+      secret_key: minioadmin
+      insecure: true
+    wal:
+      path: /var/tempo/wal
+    block:
+      version: vParquet4
+
+metrics_generator:
+  storage:
+    path: /var/tempo/generator/wal

@@ -1,0 +1,31 @@
+Artifact Depot has been deployed.
+
+1. Retrieve the admin password:
+{{- if .Values.config.defaultAdminPassword }}
+   kubectl -n {{ .Release.Namespace }} get secret {{ include "depot.configSecretName" . }} \
+     -o jsonpath='{.data.depotd\.toml}' | base64 -d | grep default_admin_password
+{{- else }}
+   A random admin password was generated on first boot.
+   Check the depot pod logs:
+     kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- end }}
+
+2. Forward the service port to your workstation:
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "depot.fullname" . }} 8080:{{ .Values.service.port }}
+
+3. Access the UI at http://localhost:8080/
+
+{{- if .Values.blobStore.enabled }}
+
+4. A post-install Job named {{ include "depot.fullname" . }}-store-init creates the
+   default blob store of type "{{ .Values.blobStore.type }}" via the REST API.
+   Check its status:
+     kubectl -n {{ .Release.Namespace }} logs job/{{ include "depot.fullname" . }}-store-init
+{{- end }}
+
+{{- if .Values.observability.enabled }}
+
+5. The embedded observability stack is enabled. Open Grafana:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "depot.fullname" . }}-grafana 3000:3000
+     open http://localhost:3000
+{{- end }}

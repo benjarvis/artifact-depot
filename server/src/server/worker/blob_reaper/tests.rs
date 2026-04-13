@@ -1,0 +1,1206 @@
+// SPDX-FileCopyrightText: 2026 Artifact Depot Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+
+use bloomfilter::Bloom;
+
+use depot_blob_file::file_blob::FileBlobStore;
+use depot_core::service;
+use depot_core::store::blob::BlobStore;
+use depot_core::store::kv::KvStore;
+use depot_core::store::kv::*;
+use depot_core::store_registry::StoreRegistry;
+use depot_kv_redb::sharded_redb::ShardedRedbKvStore;
+
+use depot_core::update::UpdateSender;
+
+use super::bloom::{bloom_empty_like, bloom_union};
+use super::docker_gc::extract_manifest_refs;
+use super::gc_loop::run_blob_reaper;
+use super::gc_pass::{gc_pass, GcState};
+use super::repo_cleanup::clean_repo_artifacts;
+
+#[test]
+fn bloom_filter_basic() {
+    let mut bf: Bloom<[u8]> = Bloom::new_for_fp_rate(100, 0.01);
+    bf.set(b"hello" as &[u8]);
+    bf.set(b"world" as &[u8]);
+    assert!(bf.check(b"hello" as &[u8]));
+    assert!(bf.check(b"world" as &[u8]));
+    assert!(!bf.check(b"missing" as &[u8]));
+}
+
+#[test]
+fn bloom_filter_union() {
+    let mut bf1: Bloom<[u8]> = Bloom::new_for_fp_rate(100, 0.01);
+    let mut bf2 = bloom_empty_like(&bf1);
+    bf1.set(b"alpha" as &[u8]);
+    bf2.set(b"beta" as &[u8]);
+
+    bloom_union(&mut bf1, &bf2);
+    assert!(bf1.check(b"alpha" as &[u8]));
+    assert!(bf1.check(b"beta" as &[u8]));
+}
+
+#[test]
+fn bloom_filter_false_positive_rate() {
+    let n = 10_000;
+    let mut bf: Bloom<[u8]> = Bloom::new_for_fp_rate(n, 0.01);
+    for i in 0..n {
+        bf.set(format!("item-{i}").as_bytes());
+    }
+
+    // All inserted items must be found (no false negatives).
+    for i in 0..n {
+        assert!(bf.check(format!("item-{i}").as_bytes()));
+    }
+
+    // Check false positive rate on non-inserted items.
+    let test_count = 100_000;
+    let mut false_positives = 0;
+    for i in n..(n + test_count) {
+        if bf.check(format!("item-{i}").as_bytes()) {
+            false_positives += 1;
+        }
+    }
+    let fp_rate = false_positives as f64 / test_count as f64;
+    // Allow up to 2% (target is 1%, some variance expected).
+    assert!(
+        fp_rate < 0.02,
+        "false positive rate {fp_rate:.4} exceeds 2%"
+    );
+}
+
+/// Helper: create the standard test scaffolding (KV, blob store, registry).
+async fn setup_test_env() -> (
+    Arc<dyn KvStore>,
+    Arc<FileBlobStore>,
+    Arc<StoreRegistry>,
+    tempfile::TempDir,
+) {
+    let dir = crate::server::infra::test_support::test_tempdir();
+    let kv: Arc<dyn KvStore> = Arc::new(
+        ShardedRedbKvStore::open(&dir.path().join("kv"), 2, 0)
+            .await
+            .unwrap(),
+    );
+    let blobs =
+        Arc::new(FileBlobStore::new(&dir.path().join("blobs"), false, 1_048_576, false).unwrap());
+    let registry = Arc::new(StoreRegistry::new());
+    registry
+        .add("default", blobs.clone() as Arc<dyn BlobStore>)
+        .await;
+
+    service::put_store(
+        kv.as_ref(),
+        &StoreRecord {
+            schema_version: CURRENT_RECORD_VERSION,
+            name: "default".to_string(),
+            kind: StoreKind::File {
+                root: dir.path().join("blobs").to_string_lossy().to_string(),
+                sync: false,
+                io_size: 1024,
+                direct_io: false,
+            },
+            created_at: chrono::Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+
+    (kv, blobs, registry, dir)
+}
+
+/// Helper: create a repo, blob, and artifact that references the blob.
+async fn create_referenced_blob(
+    kv: &dyn KvStore,
+    blobs: &FileBlobStore,
+    blob_id: &str,
+    hash: &str,
+    data: &[u8],
+) {
+    let repo = RepoConfig {
+        schema_version: CURRENT_RECORD_VERSION,
+        name: "test-repo".to_string(),
+        kind: RepoKind::Hosted,
+        format_config: FormatConfig::Raw {
+            content_disposition: None,
+        },
+        store: "default".to_string(),
+        created_at: chrono::Utc::now(),
+        cleanup_max_unaccessed_days: None,
+        cleanup_max_age_days: None,
+        deleting: false,
+    };
+    // put_repo is idempotent for our purposes.
+    let _ = service::put_repo(kv, &repo).await;
+
+    blobs.put(blob_id, data).await.unwrap();
+    service::put_blob(
+        kv,
+        "default",
+        &BlobRecord {
+            schema_version: CURRENT_RECORD_VERSION,
+            blob_id: blob_id.to_string(),
+            hash: hash.to_string(),
+            size: data.len() as u64,
+            created_at: chrono::Utc::now(),
+            store: "default".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let now = chrono::Utc::now();
+    service::put_artifact(
+        kv,
+        "test-repo",
+        &format!("file-{blob_id}.txt"),
+        &ArtifactRecord {
+            schema_version: CURRENT_RECORD_VERSION,
+            id: String::new(),
+            size: data.len() as u64,
+            content_type: "text/plain".to_string(),
+            kind: ArtifactKind::Raw,
+            created_at: now,
+            updated_at: now,
+            last_accessed_at: now,
+            path: String::new(),
+            internal: false,
+            blob_id: Some(blob_id.to_string()),
+            content_hash: Some(hash.to_string()),
+            etag: Some(hash.to_string().clone()),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_pass_deletes_orphaned_blobs() {
+    let (kv, blobs, registry, _dir) = setup_test_env().await;
+
+    // Create a blob record + file, but no artifact references it.
+    let blob_id = "orphan-blob-1";
+    blobs.put(blob_id, b"orphaned data").await.unwrap();
+    service::put_blob(
+        kv.as_ref(),
+        "default",
+        &BlobRecord {
+            schema_version: CURRENT_RECORD_VERSION,
+            blob_id: blob_id.to_string(),
+            hash: "orphan_hash_1".to_string(),
+            size: 13,
+            created_at: chrono::Utc::now(),
+            store: "default".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(blobs.exists(blob_id).await.unwrap());
+
+    let mut state = GcState::new();
+
+    // Pass 1: Phase A deletes the KV record immediately (blob_id not
+    // referenced by any artifact).  Phase B discovers the orphan blob
+    // and marks it as a candidate.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.deleted_dedup_refs, 1);
+    assert_eq!(stats.orphaned_blobs_deleted, 0);
+    assert_eq!(state.orphan_candidates.len(), 1);
+    // KV record is gone.
+    assert!(service::get_blob(kv.as_ref(), "default", "orphan_hash_1")
+        .await
+        .unwrap()
+        .is_none());
+    // File still exists (grace period).
+    assert!(blobs.exists(blob_id).await.unwrap());
+
+    // Pass 2: Phase B deletes the orphan blob (second consecutive pass).
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.orphaned_blobs_deleted, 1);
+    assert_eq!(state.orphan_candidates.len(), 0);
+    assert!(!blobs.exists(blob_id).await.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_pass_preserves_referenced_blobs() {
+    let (kv, blobs, registry, _dir) = setup_test_env().await;
+
+    create_referenced_blob(
+        kv.as_ref(),
+        &blobs,
+        "referenced-blob",
+        "ref_hash",
+        b"important data",
+    )
+    .await;
+
+    let mut state = GcState::new();
+
+    // Two passes — blob is always referenced, never deleted.
+    gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+
+    assert!(blobs.exists("referenced-blob").await.unwrap());
+    assert!(service::get_blob(kv.as_ref(), "default", "ref_hash")
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(state.orphan_candidates.len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_orphan_blob_without_kv_record() {
+    let (kv, blobs, registry, _dir) = setup_test_env().await;
+
+    // Create a blob file on disk with NO KV BlobRecord (simulates a
+    // crash between writing the file and creating the KV record).
+    let blob_id = "orphan-no-kv-1";
+    blobs.put(blob_id, b"crash orphan").await.unwrap();
+    assert!(blobs.exists(blob_id).await.unwrap());
+
+    let mut state = GcState::new();
+
+    // Pass 1: Phase A has nothing to delete (no KV record exists).
+    // Phase B discovers the file and marks it as a candidate.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.deleted_dedup_refs, 0);
+    assert_eq!(stats.orphaned_blobs_deleted, 0);
+    assert_eq!(state.orphan_candidates.len(), 1);
+    assert!(blobs.exists(blob_id).await.unwrap());
+
+    // Pass 2: Phase B deletes the orphan blob.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.orphaned_blobs_deleted, 1);
+    assert_eq!(state.orphan_candidates.len(), 0);
+    assert!(!blobs.exists(blob_id).await.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_orphan_grace_period_cleared_by_new_reference() {
+    let (kv, blobs, registry, _dir) = setup_test_env().await;
+
+    // Create an orphan blob.
+    let blob_id = "grace-blob-1";
+    blobs.put(blob_id, b"grace data").await.unwrap();
+
+    let mut state = GcState::new();
+
+    // Pass 1: file becomes a candidate.
+    gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state.orphan_candidates.len(), 1);
+
+    // Between passes: an artifact is created that references this blob_id.
+    create_referenced_blob(kv.as_ref(), &blobs, blob_id, "grace_hash", b"grace data").await;
+
+    // Pass 2: bloom filter now includes blob_id, so the candidate is
+    // pruned and the file is NOT deleted.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.orphaned_blobs_deleted, 0);
+    assert_eq!(state.orphan_candidates.len(), 0);
+    assert!(blobs.exists(blob_id).await.unwrap());
+}
+
+// -----------------------------------------------------------------------
+// extract_manifest_refs
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_extract_manifest_refs_single_manifest() {
+    let json = serde_json::json!({
+        "schemaVersion": 2,
+        "config": {"digest": "sha256:configaaa", "size": 50},
+        "layers": [
+            {"digest": "sha256:layer111", "size": 100},
+            {"digest": "sha256:layer222", "size": 200},
+        ],
+    })
+    .to_string();
+    let refs = extract_manifest_refs(&json);
+    assert_eq!(refs.len(), 3);
+    assert!(refs.contains(&"sha256:configaaa".to_string()));
+    assert!(refs.contains(&"sha256:layer111".to_string()));
+    assert!(refs.contains(&"sha256:layer222".to_string()));
+}
+
+#[test]
+fn test_extract_manifest_refs_manifest_list() {
+    let json = serde_json::json!({
+        "schemaVersion": 2,
+        "manifests": [
+            {"digest": "sha256:child1", "platform": {"architecture": "amd64"}},
+            {"digest": "sha256:child2", "platform": {"architecture": "arm64"}},
+        ],
+    })
+    .to_string();
+    let refs = extract_manifest_refs(&json);
+    assert_eq!(refs.len(), 2);
+    assert!(refs.contains(&"sha256:child1".to_string()));
+    assert!(refs.contains(&"sha256:child2".to_string()));
+}
+
+#[test]
+fn test_extract_manifest_refs_invalid_json() {
+    assert!(extract_manifest_refs("not{json").is_empty());
+}
+
+#[test]
+fn test_extract_manifest_refs_empty_object() {
+    assert!(extract_manifest_refs("{}").is_empty());
+}
+
+// -----------------------------------------------------------------------
+// GC edge cases
+// -----------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_orphan_candidate_cap() {
+    let (kv, blobs, registry, _dir) = setup_test_env().await;
+
+    // Create 5 orphan blob files (no KV records, no artifacts).
+    for i in 0..5 {
+        blobs
+            .put(&format!("orphan-cap-{i}"), format!("data-{i}").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    let mut state = GcState::new();
+
+    // Pass 1 with cap=3: only 3 should become candidates.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        3,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.orphaned_blobs_deleted, 0);
+    assert_eq!(state.orphan_candidates.len(), 3);
+
+    // Pass 2: the 3 tracked candidates are eligible for deletion.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        3,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.orphaned_blobs_deleted, 3);
+
+    // The 2 untracked orphans should still exist on disk.
+    let mut remaining = 0;
+    for i in 0..5 {
+        if blobs.exists(&format!("orphan-cap-{i}")).await.unwrap() {
+            remaining += 1;
+        }
+    }
+    assert_eq!(remaining, 2, "2 orphans should remain (were never tracked)");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_multiple_stores() {
+    let dir = crate::server::infra::test_support::test_tempdir();
+    let kv: Arc<dyn KvStore> = Arc::new(
+        ShardedRedbKvStore::open(&dir.path().join("kv"), 2, 0)
+            .await
+            .unwrap(),
+    );
+
+    // Set up two blob stores.
+    let blobs1 =
+        Arc::new(FileBlobStore::new(&dir.path().join("blobs1"), false, 1_048_576, false).unwrap());
+    let blobs2 =
+        Arc::new(FileBlobStore::new(&dir.path().join("blobs2"), false, 1_048_576, false).unwrap());
+    let registry = Arc::new(StoreRegistry::new());
+    registry
+        .add("store1", blobs1.clone() as Arc<dyn BlobStore>)
+        .await;
+    registry
+        .add("store2", blobs2.clone() as Arc<dyn BlobStore>)
+        .await;
+
+    for (name, root) in [
+        ("store1", dir.path().join("blobs1")),
+        ("store2", dir.path().join("blobs2")),
+    ] {
+        service::put_store(
+            kv.as_ref(),
+            &StoreRecord {
+                schema_version: CURRENT_RECORD_VERSION,
+                name: name.to_string(),
+                kind: StoreKind::File {
+                    root: root.to_string_lossy().to_string(),
+                    sync: false,
+                    io_size: 1024,
+                    direct_io: false,
+                },
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // Create an orphan blob in each store.
+    blobs1.put("orphan-s1", b"store1-data").await.unwrap();
+    blobs2.put("orphan-s2", b"store2-data").await.unwrap();
+
+    let mut state = GcState::new();
+
+    // Pass 1: both become candidates.
+    gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state.orphan_candidates.len(), 2);
+
+    // Pass 2: both are deleted.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.orphaned_blobs_deleted, 2);
+    assert!(!blobs1.exists("orphan-s1").await.unwrap());
+    assert!(!blobs2.exists("orphan-s2").await.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_internal_artifacts_immune() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+
+    // Create a repo with a 1-day max_age cleanup policy.
+    let repo = RepoConfig {
+        schema_version: CURRENT_RECORD_VERSION,
+        name: "internal-repo".to_string(),
+        kind: RepoKind::Hosted,
+        format_config: FormatConfig::Raw {
+            content_disposition: None,
+        },
+        store: "default".to_string(),
+        created_at: chrono::Utc::now(),
+        cleanup_max_unaccessed_days: None,
+        cleanup_max_age_days: Some(1),
+        deleting: false,
+    };
+    service::put_repo(kv.as_ref(), &repo).await.unwrap();
+
+    let old = chrono::Utc::now() - chrono::Duration::days(10);
+
+    // Internal artifact (e.g., APT metadata) — should be immune.
+    let internal = ArtifactRecord {
+        schema_version: CURRENT_RECORD_VERSION,
+        id: String::new(),
+        size: 0,
+        content_type: "application/octet-stream".to_string(),
+        created_at: old,
+        updated_at: old,
+        last_accessed_at: old,
+        path: String::new(),
+        kind: ArtifactKind::Raw,
+        internal: true,
+        blob_id: None,
+        content_hash: None,
+        etag: None,
+    };
+    service::put_artifact(kv.as_ref(), "internal-repo", "internal.txt", &internal)
+        .await
+        .unwrap();
+
+    // Non-internal artifact with same age — should be expired.
+    let external = ArtifactRecord {
+        internal: false,
+        ..internal.clone()
+    };
+    service::put_artifact(kv.as_ref(), "internal-repo", "external.txt", &external)
+        .await
+        .unwrap();
+
+    let mut state = GcState::new();
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(stats.expired_artifacts, 1);
+    assert!(
+        service::get_artifact(kv.as_ref(), "internal-repo", "internal.txt")
+            .await
+            .unwrap()
+            .is_some(),
+        "internal artifact must survive"
+    );
+    assert!(
+        service::get_artifact(kv.as_ref(), "internal-repo", "external.txt")
+            .await
+            .unwrap()
+            .is_none(),
+        "external artifact must be expired"
+    );
+}
+
+// -----------------------------------------------------------------------
+// run_blob_reaper loop tests
+// -----------------------------------------------------------------------
+
+use crate::server::config::settings::{Settings, SettingsHandle};
+use crate::server::infra::task::{TaskKind, TaskManager, TaskStatus};
+use tokio_util::sync::CancellationToken;
+
+/// Helper: create settings with a given GC interval.
+fn test_settings(gc_interval: u64) -> Arc<SettingsHandle> {
+    let mut s = Settings::default();
+    s.gc_interval_secs = Some(gc_interval);
+    s.gc_min_interval_secs = Some(gc_interval);
+    Arc::new(SettingsHandle::new(s))
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_blob_reaper_acquires_lease_and_runs_gc() {
+    let (kv, blobs, registry, _dir) = setup_test_env().await;
+
+    // Create an orphan blob — if GC runs, it will become a candidate.
+    blobs.put("reaper-orphan", b"orphan").await.unwrap();
+
+    let cancel = CancellationToken::new();
+    // gc_interval=0 so GC fires on the first 60s tick.
+    let settings = test_settings(0);
+    let task_manager = Arc::new(TaskManager::new(kv.clone(), "test-instance".into(), None));
+
+    let reaper = tokio::spawn({
+        let kv = kv.clone();
+        let registry = registry.clone();
+        let cancel = cancel.clone();
+        let settings = settings.clone();
+        let task_manager = task_manager.clone();
+        async move {
+            run_blob_reaper(
+                kv,
+                registry,
+                "test-instance".to_string(),
+                cancel,
+                settings,
+                task_manager,
+                UpdateSender::noop(),
+                Arc::new(tokio::sync::Mutex::new(GcState::new())),
+            )
+            .await;
+        }
+    });
+
+    // Wait for the reaper to complete a GC pass (ticks every 60s).
+    for _ in 0..700 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let tasks = task_manager.list().await;
+        if tasks
+            .iter()
+            .any(|t| t.kind == TaskKind::BlobGc && t.status == TaskStatus::Completed)
+        {
+            break;
+        }
+    }
+
+    cancel.cancel();
+    reaper.await.unwrap();
+
+    // Verify a GC task ran to completion.
+    let tasks = task_manager.list().await;
+    let gc_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.kind == TaskKind::BlobGc)
+        .collect();
+    assert!(
+        !gc_tasks.is_empty(),
+        "reaper should have created at least one GC task"
+    );
+    assert!(
+        gc_tasks.iter().any(|t| t.status == TaskStatus::Completed),
+        "at least one GC task should complete"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_blob_reaper_shutdown_releases_lease() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+
+    let cancel = CancellationToken::new();
+    let settings = test_settings(0);
+    let task_manager = Arc::new(TaskManager::new(kv.clone(), "test-instance".into(), None));
+
+    let reaper = tokio::spawn({
+        let kv = kv.clone();
+        let registry = registry.clone();
+        let cancel = cancel.clone();
+        let settings = settings.clone();
+        let task_manager = task_manager.clone();
+        async move {
+            run_blob_reaper(
+                kv,
+                registry,
+                "test-instance".to_string(),
+                cancel,
+                settings,
+                task_manager,
+                UpdateSender::noop(),
+                Arc::new(tokio::sync::Mutex::new(GcState::new())),
+            )
+            .await;
+        }
+    });
+
+    // Wait for GC to run.
+    for _ in 0..700 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let tasks = task_manager.list().await;
+        if !tasks.is_empty() {
+            break;
+        }
+    }
+
+    // Cancel and wait for graceful shutdown.
+    cancel.cancel();
+    reaper.await.unwrap();
+
+    // After shutdown, another instance should be able to acquire the lease.
+    let acquired = crate::server::worker::cluster::try_acquire_lease(
+        kv.as_ref(),
+        crate::server::worker::cluster::LEASE_GC,
+        "other-instance",
+        3600,
+    )
+    .await
+    .unwrap();
+    assert!(acquired, "lease should be released after shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_pass_cancellation() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+
+    // Create a repo so the pass has some work to do.
+    let repo = RepoConfig {
+        schema_version: CURRENT_RECORD_VERSION,
+        name: "cancel-repo".to_string(),
+        kind: RepoKind::Hosted,
+        format_config: FormatConfig::Raw {
+            content_disposition: None,
+        },
+        store: "default".to_string(),
+        created_at: chrono::Utc::now(),
+        cleanup_max_unaccessed_days: None,
+        cleanup_max_age_days: None,
+        deleting: false,
+    };
+    service::put_repo(kv.as_ref(), &repo).await.unwrap();
+
+    let cancel = CancellationToken::new();
+    cancel.cancel(); // Cancel immediately.
+
+    let mut state = GcState::new();
+    let result = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        Some(&cancel),
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await;
+    assert!(result.is_err(), "cancelled pass should return error");
+}
+
+// -----------------------------------------------------------------------
+// S3 orphan scanning via gc_pass
+// -----------------------------------------------------------------------
+
+use depot_blob_s3::S3BlobStore;
+
+/// Start an in-process S3 server and return (S3BlobStore, endpoint, TempDir).
+async fn make_s3_store() -> (Arc<S3BlobStore>, String, tempfile::TempDir) {
+    use hyper_util::rt::TokioIo;
+    use s3s::service::S3ServiceBuilder;
+    use tokio::net::TcpListener;
+
+    let s3_root = tempfile::tempdir().expect("create s3 root");
+    std::fs::create_dir_all(s3_root.path().join("test-bucket")).expect("create bucket dir");
+
+    let fs = s3s_fs::FileSystem::new(s3_root.path()).expect("s3s_fs::FileSystem::new");
+    let service = {
+        let mut b = S3ServiceBuilder::new(fs);
+        b.set_auth(s3s::auth::SimpleAuth::from_single("test", "test"));
+        b.build()
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => break,
+            };
+            let svc = service.clone();
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let _ = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .serve_connection(io, svc)
+                .await;
+            });
+        }
+    });
+
+    let endpoint = format!("http://127.0.0.1:{}", addr.port());
+
+    let store = Arc::new(
+        S3BlobStore::new(
+            "test-bucket".to_string(),
+            Some(endpoint.clone()),
+            "us-east-1".to_string(),
+            None,
+            Some("test".to_string()),
+            Some("test".to_string()),
+            3,
+            3,
+            30,
+            "standard",
+        )
+        .await
+        .expect("S3BlobStore::new"),
+    );
+
+    (store, endpoint, s3_root)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_pass_s3_orphan_scanning() {
+    let dir = crate::server::infra::test_support::test_tempdir();
+    let kv: Arc<dyn KvStore> = Arc::new(
+        ShardedRedbKvStore::open(&dir.path().join("kv"), 2, 0)
+            .await
+            .unwrap(),
+    );
+
+    let (s3_store, endpoint, _s3_root) = make_s3_store().await;
+    let registry = Arc::new(StoreRegistry::new());
+    registry
+        .add("s3-store", s3_store.clone() as Arc<dyn BlobStore>)
+        .await;
+
+    service::put_store(
+        kv.as_ref(),
+        &StoreRecord {
+            schema_version: CURRENT_RECORD_VERSION,
+            name: "s3-store".to_string(),
+            kind: StoreKind::S3 {
+                bucket: "test-bucket".to_string(),
+                endpoint: Some(endpoint),
+                region: "us-east-1".to_string(),
+                prefix: None,
+                access_key: Some("test".to_string()),
+                secret_key: Some("test".to_string()),
+                max_retries: 3,
+                connect_timeout_secs: 3,
+                read_timeout_secs: 30,
+                retry_mode: "standard".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Create an orphan blob in S3 (no artifact references it).
+    let orphan_id = "orphan-s3-blob-1";
+    s3_store.put(orphan_id, b"s3 orphan data").await.unwrap();
+    service::put_blob(
+        kv.as_ref(),
+        "s3-store",
+        &BlobRecord {
+            schema_version: CURRENT_RECORD_VERSION,
+            blob_id: orphan_id.to_string(),
+            hash: "s3_orphan_hash".to_string(),
+            size: 14,
+            created_at: chrono::Utc::now(),
+            store: "s3-store".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut state = GcState::new();
+
+    // Pass 1: KV record is deleted (not referenced), orphan blob becomes candidate.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.deleted_dedup_refs, 1);
+    assert_eq!(stats.orphaned_blobs_deleted, 0);
+    assert_eq!(state.orphan_candidates.len(), 1);
+    // Blob still exists in S3.
+    assert!(s3_store.exists(orphan_id).await.unwrap());
+
+    // Pass 2: Orphan file is deleted after grace period.
+    let stats = gc_pass(
+        kv.clone(),
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.orphaned_blobs_deleted, 1);
+    assert_eq!(state.orphan_candidates.len(), 0);
+    assert!(!s3_store.exists(orphan_id).await.unwrap());
+}
+
+// -----------------------------------------------------------------------
+// Error injection tests
+// -----------------------------------------------------------------------
+
+use depot_core::error::Retryability;
+use depot_core::store::test_mock::{FailingKvStore, KvOp};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_pass_transient_error() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+    let kv = FailingKvStore::wrap(kv);
+
+    // Fail scan_prefix on repos table → list_repos fails transiently.
+    kv.fail_on_table(KvOp::ScanPrefix, "repos", Some(1), Retryability::Transient);
+
+    let mut state = GcState::new();
+    let result = gc_pass(
+        kv.clone() as Arc<dyn KvStore>,
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await;
+    match result {
+        Err(e) => assert!(e.is_transient(), "error should be transient"),
+        Ok(_) => panic!("gc_pass should have failed"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_pass_permanent_error() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+    let kv = FailingKvStore::wrap(kv);
+
+    kv.fail_on_table(KvOp::ScanPrefix, "repos", Some(1), Retryability::Permanent);
+
+    let mut state = GcState::new();
+    let result = gc_pass(
+        kv.clone() as Arc<dyn KvStore>,
+        &registry,
+        &mut state,
+        None,
+        usize::MAX,
+        None,
+        false,
+        &UpdateSender::noop(),
+    )
+    .await;
+    match result {
+        Err(e) => assert!(!e.is_transient(), "error should be permanent"),
+        Ok(_) => panic!("gc_pass should have failed"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_repo_artifacts_basic() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+
+    // Create a repo with 1-day max_age policy.
+    let repo = RepoConfig {
+        schema_version: CURRENT_RECORD_VERSION,
+        name: "clean-test".to_string(),
+        kind: RepoKind::Hosted,
+        format_config: FormatConfig::Raw {
+            content_disposition: None,
+        },
+        store: "default".to_string(),
+        created_at: chrono::Utc::now(),
+        cleanup_max_unaccessed_days: None,
+        cleanup_max_age_days: Some(1),
+        deleting: false,
+    };
+    service::put_repo(kv.as_ref(), &repo).await.unwrap();
+
+    let old = chrono::Utc::now() - chrono::Duration::days(5);
+    let now = chrono::Utc::now();
+
+    // Old artifact (should be expired).
+    let old_rec = ArtifactRecord {
+        schema_version: CURRENT_RECORD_VERSION,
+        id: String::new(),
+        size: 0,
+        content_type: "application/octet-stream".to_string(),
+        created_at: old,
+        updated_at: old,
+        last_accessed_at: old,
+        path: String::new(),
+        kind: ArtifactKind::Raw,
+        internal: false,
+        blob_id: None,
+        content_hash: None,
+        etag: None,
+    };
+    service::put_artifact(kv.as_ref(), "clean-test", "old.txt", &old_rec)
+        .await
+        .unwrap();
+
+    // New artifact (should survive).
+    let new_rec = ArtifactRecord {
+        created_at: now,
+        updated_at: now,
+        last_accessed_at: now,
+        ..old_rec.clone()
+    };
+    service::put_artifact(kv.as_ref(), "clean-test", "new.txt", &new_rec)
+        .await
+        .unwrap();
+
+    let stats = clean_repo_artifacts(
+        kv.clone(),
+        &registry,
+        &repo,
+        None,
+        None,
+        &UpdateSender::noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.expired_artifacts, 1);
+    assert_eq!(stats.scanned_artifacts, 1);
+
+    assert!(service::get_artifact(kv.as_ref(), "clean-test", "old.txt")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(service::get_artifact(kv.as_ref(), "clean-test", "new.txt")
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_repo_artifacts_scan_error() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+    let kv = FailingKvStore::wrap(kv);
+
+    let repo = RepoConfig {
+        schema_version: CURRENT_RECORD_VERSION,
+        name: "err-repo".to_string(),
+        kind: RepoKind::Hosted,
+        format_config: FormatConfig::Raw {
+            content_disposition: None,
+        },
+        store: "default".to_string(),
+        created_at: chrono::Utc::now(),
+        cleanup_max_unaccessed_days: None,
+        cleanup_max_age_days: Some(1),
+        deleting: false,
+    };
+    service::put_repo(kv.as_ref(), &repo).await.unwrap();
+
+    // Fail artifact scan.
+    kv.fail_on_table(KvOp::ScanRange, "artifacts", None, Retryability::Permanent);
+
+    let result = clean_repo_artifacts(
+        kv.clone() as Arc<dyn KvStore>,
+        &registry,
+        &repo,
+        None,
+        None,
+        &UpdateSender::noop(),
+    )
+    .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_repo_artifacts_with_cancel() {
+    let (kv, _blobs, registry, _dir) = setup_test_env().await;
+
+    let repo = RepoConfig {
+        schema_version: CURRENT_RECORD_VERSION,
+        name: "cancel-clean".to_string(),
+        kind: RepoKind::Hosted,
+        format_config: FormatConfig::Raw {
+            content_disposition: None,
+        },
+        store: "default".to_string(),
+        created_at: chrono::Utc::now(),
+        cleanup_max_unaccessed_days: None,
+        cleanup_max_age_days: None,
+        deleting: false,
+    };
+    service::put_repo(kv.as_ref(), &repo).await.unwrap();
+
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let result = clean_repo_artifacts(
+        kv.clone(),
+        &registry,
+        &repo,
+        Some(&cancel),
+        None,
+        &UpdateSender::noop(),
+    )
+    .await;
+    assert!(result.is_err(), "cancelled clean should return error");
+}

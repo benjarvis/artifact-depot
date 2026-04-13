@@ -1,0 +1,58 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Artifact Depot
+Upstream-Contact: Quantum
+
+# Documentation
+Files: *.md docs/*.md .claude/skills/*/SKILL.md
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# Lock files and generated metadata
+Files: Cargo.lock ui/frontend/package-lock.json dynamodb-local-metadata.json
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# JSON configuration files
+Files: *.json ui/frontend/*.json .devcontainer/*.json .claude/*.json ui/frontend/.nycrc.json
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# TOML configuration files
+Files: *.toml server/*.toml bench/*.toml etc/*.toml .cargo/*.toml
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# Docker and ignore files
+Files: Dockerfile .devcontainer/Dockerfile test-apt-cache/Dockerfile tests/npm-docker/Dockerfile .dockerignore .gitignore
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# SVG assets
+Files: ui/frontend/src/assets/*.svg ui/frontend/public/*.svg
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# Docker Compose examples
+Files: docker/**/compose.yaml docker/**/*.yaml docker/**/*.toml docker/**/.env docker/**/.env.example
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# Helm chart
+Files: charts/**/Chart.yaml charts/**/values*.yaml charts/**/.helmignore charts/**/templates/*.yaml charts/**/templates/*.tpl charts/**/templates/NOTES.txt charts/**/templates/**/*.yaml charts/**/templates/**/*.tpl
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# HTML templates
+Files: ui/frontend/index.html
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# Test fixture package.json files
+Files: tests/npm-docker/*/package.json
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# License and notice files
+Files: LICENSE LICENSES/*
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0

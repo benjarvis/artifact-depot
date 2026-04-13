@@ -1,0 +1,131 @@
+{{- if .Values.observability.enabled -}}
+{{- $name := printf "%s-tempo" (include "depot.fullname" .) -}}
+{{- $minioName := printf "%s-minio" (include "depot.fullname" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "tempo") | nindent 4 }}
+data:
+  tempo.yaml: |
+    stream_over_http_enabled: true
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+    storage:
+      trace:
+        backend: s3
+        s3:
+          bucket: tempo
+          endpoint: {{ $minioName }}:9000
+          access_key: ${MINIO_ROOT_USER}
+          secret_key: ${MINIO_ROOT_PASSWORD}
+          insecure: true
+        wal:
+          path: /var/tempo/wal
+        block:
+          version: vParquet4
+    metrics_generator:
+      storage:
+        path: /var/tempo/generator/wal
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "tempo") | nindent 4 }}
+spec:
+  ports:
+    - name: http
+      port: 3200
+      targetPort: 3200
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+  selector:
+    {{- include "depot.obs.selectorLabels" (list . "tempo") | nindent 4 }}
+{{- if .Values.observability.tempo.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "tempo") | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.observability.tempo.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.observability.tempo.persistence.size | quote }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "tempo") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "depot.obs.selectorLabels" (list . "tempo") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "depot.obs.selectorLabels" (list . "tempo") | nindent 8 }}
+    spec:
+      containers:
+        - name: tempo
+          image: {{ .Values.observability.tempo.image }}
+          args: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $minioName }}
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $minioName }}
+                  key: root-password
+          ports:
+            - containerPort: 3200
+              name: http
+            - containerPort: 4317
+              name: otlp-grpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo
+            - name: data
+              mountPath: /var/tempo
+          {{- with .Values.observability.tempo.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: data
+          {{- if .Values.observability.tempo.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end -}}

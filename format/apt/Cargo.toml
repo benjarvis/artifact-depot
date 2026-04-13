@@ -1,0 +1,41 @@
+[package]
+name = "depot-format-apt"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "depot_format_apt"
+path = "src/lib.rs"
+
+[dependencies]
+depot-core = { path = "../../core", features = ["http", "repo"] }
+axum = { version = "0.8", features = ["multipart"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tokio-util = { version = "0.7", features = ["io", "io-util"] }
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+blake3 = "1"
+sha2 = "0.10"
+futures = "0.3"
+tar = "0.4"
+flate2 = "1"
+ar = "0.9"
+lzma-rs = "0.3"
+ruzstd = "0.7"
+pgp = "0.14"
+rand = "0.8"
+smallvec = "1"
+anyhow = "1"
+
+[dev-dependencies]
+depot-test-support = { path = "../../test-support" }
+depot-server = { path = "../../server" }
+tokio = { version = "1", features = ["full", "test-util"] }
+http-body-util = "0.1"
+serde_json = "1"
+axum = "0.8"
+wiremock = "0.6"
+sha2 = "0.10"

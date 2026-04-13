@@ -1,0 +1,278 @@
+{
+  "uid": "depot-overview",
+  "title": "Depot Overview",
+  "tags": ["depot"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 40,
+      "title": "Storage by Repository",
+      "type": "piechart",
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "depot_repository_bytes{repo_type!=\"proxy\"} > scalar(sum(depot_repository_bytes{repo_type!=\"proxy\"})) * 0.01", "legendFormat": "{{repository}}", "refId": "A" },
+        { "expr": "sum(depot_repository_bytes{repo_type!=\"proxy\"} <= scalar(sum(depot_repository_bytes{repo_type!=\"proxy\"})) * 0.01)", "legendFormat": "Other", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "right" },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "tooltip": { "mode": "single" },
+        "displayLabels": []
+      }
+    },
+    {
+      "id": 42,
+      "title": "Total Size",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 2, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(depot_repository_bytes{repo_type!=\"proxy\"})", "legendFormat": "", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "decimals": 1 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none", "textMode": "value", "justifyMode": "center" }
+    },
+    {
+      "id": 43,
+      "title": "Artifacts",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 2, "x": 6, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(depot_repository_artifacts{repo_type!=\"proxy\"})", "legendFormat": "", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none", "textMode": "value", "justifyMode": "center" }
+    },
+    {
+      "id": 1,
+      "title": "Operations In-Flight",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 5, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(http_requests_in_flight)", "legendFormat": "HTTP", "refId": "A" },
+        { "expr": "kv_store_ops_in_flight", "legendFormat": "KV", "refId": "B" },
+        { "expr": "blob_store_ops_in_flight", "legendFormat": "Blob", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "decimals": 0,
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 2,
+      "title": "Request Rate by Type",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 5, "x": 13, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (http_request_method, http_route) (rate(http_requests_total[15s]))", "legendFormat": "{{http_request_method}} {{http_route}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "bars", "fillOpacity": 80, "stacking": { "mode": "normal" }, "showPoints": "never", "hideFrom": { "tooltip": false, "viz": false, "legend": false } }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc", "hideZeros": true } }
+    },
+    {
+      "id": 3,
+      "title": "Throughput (bytes/sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(ingest_bytes_total[15s])", "legendFormat": "Ingest {{format}}", "refId": "A" },
+        { "expr": "rate(blob_store_written_bytes_total[15s])", "legendFormat": "Blob Write", "refId": "B" },
+        { "expr": "rate(blob_store_read_bytes_total[15s])", "legendFormat": "Blob Read", "refId": "C" },
+        { "expr": "rate(docker_upload_bytes_total[15s])", "legendFormat": "Docker Upload", "refId": "D" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 15, "showPoints": "never" }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 10,
+      "title": "Request Latency",
+      "description": "Click a cell to find matching traces in Tempo",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(increase(http_request_duration_seconds_bucket[1m])) by (le)", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "links": [{
+            "title": "Find traces in this latency range",
+            "url": "/explore?schemaVersion=1&panes={\"one\":{\"datasource\":\"tempo\",\"queries\":[{\"refId\":\"A\",\"queryType\":\"traceql\",\"query\":\"{name=\\\"http_request\\\"}\",\"tableType\":\"traces\"}],\"range\":{\"from\":\"now-15m\",\"to\":\"now\"}}}&orgId=1",
+            "targetBlank": true
+          }]
+        }
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": { "mode": "scheme", "scheme": "Greens", "steps": 64 },
+        "yAxis": { "unit": "s" },
+        "tooltip": { "show": true, "yHistogram": true },
+        "exemplars": { "color": "rgba(255,0,255,0.7)" }
+      }
+    },
+    {
+      "id": 20,
+      "title": "KV Store Latency",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(increase(kv_store_operation_duration_seconds_bucket[1m])) by (le)", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }
+      ],
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": { "mode": "scheme", "scheme": "Blues", "steps": 64 },
+        "yAxis": { "unit": "s" },
+        "tooltip": { "show": true, "yHistogram": true }
+      }
+    },
+    {
+      "id": 21,
+      "title": "Blob Store Latency",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(increase(blob_store_operation_duration_seconds_bucket[1m])) by (le)", "legendFormat": "{{le}}", "refId": "A", "format": "heatmap" }
+      ],
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": { "mode": "scheme", "scheme": "Purples", "steps": 64 },
+        "yAxis": { "unit": "s" },
+        "tooltip": { "show": true, "yHistogram": true }
+      }
+    },
+    {
+      "id": 30,
+      "title": "HTTP Requests",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{service_name=\"depot\"} |= `request` | logfmt | method != `` | line_format `{{.method}} {{.path}}`",
+          "refId": "A",
+          "queryType": "instant"
+        }
+      ],
+      "transformations": [
+        { "id": "extractFields", "options": { "source": "labels", "keepOriginals": false } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "id": true, "tsNs": true, "Line": true,
+              "direction": true, "action": true,
+              "service_name": true, "detected_level": true,
+              "severity": true, "target": true, "level": true,
+              "trace_id": false,
+              "sdk_version": true, "sdk_name": true, "sdk_language": true,
+              "telemetry_sdk_version": true, "telemetry_sdk_name": true, "telemetry_sdk_language": true,
+              "span_id": true, "severity_text": true, "severity_number": true,
+              "instance_id": true, "service_instance_id": true,
+              "scope_name": true, "flags": true,
+              "deployment_environment": true, "deployment.environment": true,
+              "labels": true,
+              "otel_scope_name": true, "otel_scope_version": true,
+              "service_version": true, "service.version": true,
+              "service.instance.id": true, "service.name": true
+            },
+            "renameByName": {
+              "Time": "Time", "request_id": "Request", "method": "Method",
+              "path": "Path", "status": "Status", "username": "User",
+              "ip": "IP", "bytes_recv": "RX", "bytes_sent": "TX",
+              "elapsed_ns": "Latency", "trace_id": "Trace ID"
+            },
+            "indexByName": {
+              "Time": 0, "request_id": 1, "method": 2, "path": 3,
+              "status": 4, "username": 5, "ip": 6,
+              "bytes_recv": 7, "bytes_sent": 8, "elapsed_ns": 9
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Time" }, "properties": [{ "id": "custom.width", "value": 160 }] },
+          {
+            "matcher": { "id": "byName", "options": "Request" },
+            "properties": [
+              { "id": "custom.width", "value": 290 },
+              {
+                "id": "links",
+                "value": [{
+                  "title": "View trace in Tempo",
+                  "url": "/explore?schemaVersion=1&panes={\"one\":{\"datasource\":\"tempo\",\"queries\":[{\"refId\":\"A\",\"queryType\":\"traceql\",\"query\":\"${__data.fields.trace_id}\",\"tableType\":\"traces\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}}&orgId=1",
+                  "targetBlank": true
+                }]
+              }
+            ]
+          },
+          { "matcher": { "id": "byName", "options": "Method" }, "properties": [{ "id": "custom.width", "value": 70 }] },
+          { "matcher": { "id": "byName", "options": "Path" }, "properties": [{ "id": "custom.width", "value": 500 }] },
+          { "matcher": { "id": "byName", "options": "Status" }, "properties": [{ "id": "custom.width", "value": 60 }] },
+          { "matcher": { "id": "byName", "options": "User" }, "properties": [{ "id": "custom.width", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "IP" }, "properties": [{ "id": "custom.width", "value": 120 }] },
+          { "matcher": { "id": "byName", "options": "RX" }, "properties": [{ "id": "unit", "value": "decbytes" }, { "id": "custom.width", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "TX" }, "properties": [{ "id": "unit", "value": "decbytes" }, { "id": "custom.width", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "Latency" }, "properties": [{ "id": "unit", "value": "ns" }, { "id": "custom.width", "value": 90 }] },
+          { "matcher": { "id": "byName", "options": "Trace ID" }, "properties": [{ "id": "custom.hidden", "value": true }] }
+        ]
+      }
+    },
+    {
+      "id": 31,
+      "title": "Recent Activity",
+      "type": "logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{service_name=\"depot\", scope_name=\"depot.request\"} | line_format `{{.direction}} {{.method}} {{.path}} \u2192 {{.status}} | {{.username}}@{{.ip}} | rx={{.bytes_recv}} tx={{.bytes_sent}} | {{.action}}`",
+          "refId": "A"
+        },
+        {
+          "expr": "{service_name=\"depot\", scope_name!=\"depot.request\"} | line_format `[{{.scope_name}}] {{__line__}} {{if .repo}}repo={{.repo}}{{end}}{{if .path}} path={{.path}}{{end}}{{if .size_mb}} size={{.size_mb}}MB{{end}}{{if .kv_ms}} kv={{.kv_ms}}ms{{end}}`",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    }
+  ],
+  "templating": { "list": [] },
+  "schemaVersion": 39
+}

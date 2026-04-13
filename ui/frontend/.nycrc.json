@@ -1,0 +1,9 @@
+{
+  "all": true,
+  "include": ["src/**/*.ts", "src/**/*.vue"],
+  "exclude": ["node_modules", "e2e"],
+  "report-dir": "../../build/test/ui/coverage",
+  "temp-dir": ".nyc_output",
+  "instrument": false,
+  "reporter": ["text-summary", "html"]
+}

@@ -1,0 +1,135 @@
+{{- if .Values.blobStore.enabled -}}
+{{/*
+Post-install/upgrade Helm hook that creates the default blob store via the
+REST API once depot is healthy. Idempotent: 409 Conflict is treated as
+success, so re-running the Job (e.g. after a chart upgrade) is safe.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "depot.fullname" . }}-store-init
+  labels:
+    {{- include "depot.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "depot.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "depot.serviceAccountName" . }}
+      containers:
+        - name: store-init
+          image: alpine/curl:latest
+          env:
+            - name: DEPOT_URL
+              value: "http://{{ include "depot.fullname" . }}:{{ .Values.service.port }}"
+            {{- if .Values.config.defaultAdminPassword }}
+            - name: DEPOT_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "depot.configSecretName" . }}
+                  key: admin-password
+            {{- else }}
+            {{- fail "blobStore.enabled requires config.defaultAdminPassword so the init Job can authenticate. Set config.defaultAdminPassword or disable blobStore.enabled and create the store manually." }}
+            {{- end }}
+            - name: STORE_NAME
+              value: {{ .Values.blobStore.name | quote }}
+            - name: STORE_TYPE
+              value: {{ .Values.blobStore.type | quote }}
+            {{- if eq .Values.blobStore.type "file" }}
+            - name: STORE_ROOT
+              value: {{ .Values.blobStore.file.root | quote }}
+            {{- else if eq .Values.blobStore.type "s3" }}
+            - name: S3_BUCKET
+              value: {{ .Values.blobStore.s3.bucket | quote }}
+            - name: S3_REGION
+              value: {{ .Values.blobStore.s3.region | quote }}
+            {{- if .Values.blobStore.s3.endpoint }}
+            - name: S3_ENDPOINT
+              value: {{ .Values.blobStore.s3.endpoint | quote }}
+            {{- end }}
+            {{- if .Values.blobStore.s3.prefix }}
+            - name: S3_PREFIX
+              value: {{ .Values.blobStore.s3.prefix | quote }}
+            {{- end }}
+            {{- $s3Secret := .Values.blobStore.s3.existingSecret | default (include "depot.s3SecretName" .) }}
+            {{- if or .Values.blobStore.s3.accessKey .Values.blobStore.s3.existingSecret }}
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s3Secret }}
+                  key: access-key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s3Secret }}
+                  key: secret-key
+            {{- else if .Values.aws.enabled }}
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "depot.awsSecretEffective" . }}
+                  key: access-key-id
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "depot.awsSecretEffective" . }}
+                  key: secret-access-key
+            {{- end }}
+            {{- end }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for depot at $DEPOT_URL..."
+              for i in $(seq 1 60); do
+                if curl -sf "$DEPOT_URL/api/v1/health" >/dev/null 2>&1; then
+                  echo "Depot is ready."
+                  break
+                fi
+                if [ "$i" = "60" ]; then
+                  echo "ERROR: depot did not become healthy in 120s"
+                  exit 1
+                fi
+                sleep 2
+              done
+
+              if [ "$STORE_TYPE" = "file" ]; then
+                BODY=$(printf '{"name":"%s","store_type":"file","root":"%s"}' "$STORE_NAME" "$STORE_ROOT")
+              else
+                BODY=$(printf '{"name":"%s","store_type":"s3","bucket":"%s","region":"%s"' \
+                  "$STORE_NAME" "$S3_BUCKET" "$S3_REGION")
+                if [ -n "$S3_ENDPOINT" ]; then
+                  BODY="$BODY,\"endpoint\":\"$S3_ENDPOINT\""
+                fi
+                if [ -n "$S3_PREFIX" ]; then
+                  BODY="$BODY,\"prefix\":\"$S3_PREFIX\""
+                fi
+                if [ -n "$S3_ACCESS_KEY" ]; then
+                  BODY="$BODY,\"access_key\":\"$S3_ACCESS_KEY\",\"secret_key\":\"$S3_SECRET_KEY\""
+                fi
+                BODY="$BODY}"
+              fi
+
+              echo "Creating blob store $STORE_NAME ($STORE_TYPE)..."
+              code=$(curl -s -o /tmp/resp -w "%{http_code}" \
+                -u "admin:$DEPOT_ADMIN_PASSWORD" \
+                -X POST "$DEPOT_URL/api/v1/stores" \
+                -H "Content-Type: application/json" \
+                -d "$BODY")
+
+              case "$code" in
+                201) echo "Store created." ;;
+                409) echo "Store already exists (idempotent)." ;;
+                *)
+                  echo "ERROR: store creation failed (HTTP $code)"
+                  cat /tmp/resp
+                  exit 1
+                  ;;
+              esac
+{{- end -}}

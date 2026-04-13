@@ -1,0 +1,26 @@
+[package]
+name = "depot-format-golang"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "depot_format_golang"
+path = "src/lib.rs"
+
+[dependencies]
+depot-core = { path = "../../core", features = ["http", "repo"] }
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+blake3 = "1"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"], default-features = false }
+
+[dev-dependencies]
+depot-test-support = { path = "../../test-support" }
+tokio = { version = "1", features = ["full", "test-util"] }
+axum = "0.8"
+wiremock = "0.6"

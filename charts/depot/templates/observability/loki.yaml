@@ -1,0 +1,133 @@
+{{- if .Values.observability.enabled -}}
+{{- $name := printf "%s-loki" (include "depot.fullname" .) -}}
+{{- $minioName := printf "%s-minio" (include "depot.fullname" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "loki") | nindent 4 }}
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: inmemory
+      replication_factor: 1
+      path_prefix: /loki
+    schema_config:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: s3
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    storage_config:
+      tsdb_shipper:
+        active_index_directory: /loki/tsdb-index
+        cache_location: /loki/tsdb-cache
+      aws:
+        endpoint: http://{{ $minioName }}:9000
+        bucketnames: loki
+        access_key_id: ${MINIO_ROOT_USER}
+        secret_access_key: ${MINIO_ROOT_PASSWORD}
+        s3forcepathstyle: true
+        insecure: true
+    limits_config:
+      allow_structured_metadata: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "loki") | nindent 4 }}
+spec:
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+  selector:
+    {{- include "depot.obs.selectorLabels" (list . "loki") | nindent 4 }}
+{{- if .Values.observability.loki.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "loki") | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.observability.loki.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.observability.loki.persistence.size | quote }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "loki") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "depot.obs.selectorLabels" (list . "loki") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "depot.obs.selectorLabels" (list . "loki") | nindent 8 }}
+    spec:
+      containers:
+        - name: loki
+          image: {{ .Values.observability.loki.image }}
+          args: ["-config.file=/etc/loki/loki.yaml", "-config.expand-env=true"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $minioName }}
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $minioName }}
+                  key: root-password
+          ports:
+            - containerPort: 3100
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+            - name: data
+              mountPath: /loki
+          {{- with .Values.observability.loki.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: data
+          {{- if .Values.observability.loki.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end -}}

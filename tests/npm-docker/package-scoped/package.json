@@ -1,0 +1,7 @@
+{
+  "name": "@testorg/widget",
+  "version": "2.0.0",
+  "description": "A scoped test package for depot npm integration",
+  "main": "index.js",
+  "license": "MIT"
+}

@@ -1,0 +1,22 @@
+{{/*
+Standalone PVC for the file blob store when using Deployment mode
+(kvStore.type=dynamodb + blobStore.type=file). In StatefulSet mode the PVC
+is provisioned per-pod via volumeClaimTemplates instead.
+*/}}
+{{- if and (ne (include "depot.isStateful" .) "true") (eq .Values.blobStore.type "file") .Values.blobStore.file.persistence.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "depot.fullname" . }}-data
+  labels:
+    {{- include "depot.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.blobStore.file.persistence.accessModes | nindent 4 }}
+  {{- with .Values.blobStore.file.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.blobStore.file.persistence.size | quote }}
+{{- end -}}

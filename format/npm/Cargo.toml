@@ -1,0 +1,31 @@
+[package]
+name = "depot-format-npm"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "depot_format_npm"
+path = "src/lib.rs"
+
+[dependencies]
+depot-core = { path = "../../core", features = ["http", "repo"] }
+axum = { version = "0.8", features = ["multipart"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+blake3 = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"], default-features = false }
+
+[dev-dependencies]
+depot-test-support = { path = "../../test-support" }
+tokio = { version = "1", features = ["full", "test-util"] }
+http-body-util = "0.1"
+base64 = "0.22"
+axum = "0.8"
+wiremock = "0.6"

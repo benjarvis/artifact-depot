@@ -1,0 +1,15 @@
+default_admin_password = "admin"
+
+[http]
+listen = "0.0.0.0:8080"
+
+[kv_store]
+type = "redb"
+path = "build/demo/depot.redb"
+
+# Operational settings (access_log, cors, rate_limit, etc.) are managed
+# via the Settings API: GET/PUT /api/v1/settings
+# Blob stores are managed via the Stores API: /api/v1/stores
+
+# [tracing]
+# otlp_endpoint = "http://localhost:4317"

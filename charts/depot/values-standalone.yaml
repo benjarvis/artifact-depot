@@ -1,0 +1,30 @@
+# Standalone profile: single-node depot with embedded redb and a filesystem
+# blob store on a PVC. Matches docker/standalone/.
+#
+# Install:
+#   helm install depot ./charts/depot -f charts/depot/values-standalone.yaml
+
+replicaCount: 1
+
+kvStore:
+  type: redb
+  redb:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+blobStore:
+  enabled: true
+  type: file
+  file:
+    root: /data/blobs
+    persistence:
+      enabled: true
+      # Shares the same PVC as redb via volumeClaimTemplates, so this size is
+      # NOT used in standalone mode -- see kvStore.redb.persistence.size.
+
+aws:
+  enabled: false
+
+observability:
+  enabled: false

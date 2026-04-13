@@ -1,0 +1,31 @@
+[package]
+name = "depot-blob-s3"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "depot_blob_s3"
+path = "src/lib.rs"
+
+[dependencies]
+depot-core = { path = "../../core" }
+async-trait = "0.1"
+aws-sdk-s3 = "1"
+aws-config = "1"
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "io-util"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+bytes = "1"
+http-body = "1"
+http-body-util = "0.1"
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "io-util", "net", "time"] }
+tempfile = "3"
+s3s = "0.13"
+s3s-fs = "0.13"
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }

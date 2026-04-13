@@ -1,0 +1,90 @@
+{{- if .Values.observability.enabled -}}
+{{- $name := printf "%s-otel-collector" (include "depot.fullname" .) -}}
+{{- $tempoName := printf "%s-tempo" (include "depot.fullname" .) -}}
+{{- $lokiName := printf "%s-loki" (include "depot.fullname" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "otel-collector") | nindent 4 }}
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+    exporters:
+      otlp/tempo:
+        endpoint: {{ $tempoName }}:4317
+        tls:
+          insecure: true
+      otlphttp/loki:
+        endpoint: http://{{ $lokiName }}:3100/otlp
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/tempo]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp/loki]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "otel-collector") | nindent 4 }}
+spec:
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+  selector:
+    {{- include "depot.obs.selectorLabels" (list . "otel-collector") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "depot.obs.labels" (list . "otel-collector") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "depot.obs.selectorLabels" (list . "otel-collector") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "depot.obs.selectorLabels" (list . "otel-collector") | nindent 8 }}
+    spec:
+      containers:
+        - name: otel-collector
+          image: {{ .Values.observability.otelCollector.image }}
+          args: ["--config=/etc/otelcol/collector.yaml"]
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+          {{- with .Values.observability.otelCollector.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+{{- end -}}

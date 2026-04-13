@@ -1,0 +1,18 @@
+default_admin_password = "admin"
+metrics_listen = "0.0.0.0:9090"
+
+[http]
+listen = "0.0.0.0:8080"
+
+[kv_store]
+type = "redb"
+path = "/data/kv"
+
+# Uncomment for production:
+# server_secret = "replace-with-a-random-secret"
+
+# Uncomment to enable OpenTelemetry tracing (requires --profile monitoring):
+# [tracing]
+# otlp_endpoint = "http://otel-collector:4317"
+# service_name = "depot"
+# deployment_environment = "dev"

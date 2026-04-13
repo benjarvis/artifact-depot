@@ -1,0 +1,80 @@
+[package]
+name = "depot-core"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "depot_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Core deps — always included
+anyhow = "1"
+arc-swap = "1"
+async-trait = "0.1"
+base64 = "0.22"
+blake3 = "1"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+metrics = "0.24"
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tokio-stream = { version = "0.1", optional = true }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Optional heavy deps — only pulled in by feature-gated error conversions
+# and shared repo infrastructure.
+axum = { version = "0.8", features = ["multipart"], optional = true }
+opentelemetry = { version = "0.31", optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"], default-features = false, optional = true }
+utoipa = { version = "5", features = ["axum_extras"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+# Integration tests for the shared repo and service layers need real backends.
+depot-blob-file = { path = "../blob/file" }
+depot-kv-redb = { path = "../kv/redb" }
+tempfile = "3"
+wiremock = "0.6"
+rmp-serde = "1"
+
+[features]
+default = []
+# HTTP feature: axum IntoResponse for DepotError + shared API helpers + FormatState
+http = ["dep:axum", "reqwest-errors", "repo"]
+# OpenAPI schema derives
+openapi = ["dep:utoipa"]
+# Shared repo infrastructure (RepoContext, RawRepo, cache/hosted/proxy)
+repo = ["dep:reqwest", "dep:opentelemetry", "dep:tracing-opentelemetry", "dep:tokio-stream", "reqwest-errors"]
+# Per-backend error conversions (From impls)
+reqwest-errors = ["dep:reqwest"]
+# Test support: FailingKvStore / FailingBlobStore fault-injection wrappers.
+# Enabled by depot-core's own tests and by downstream crates that need them.
+# Pulls in `repo` because test_mock wraps traits used by the shared repo layer,
+# and depot-core's integration tests exercise that layer end-to-end.
+test-support = ["repo"]
+
+# Integration tests require the `test-support` feature (which pulls in `repo`).
+[[test]]
+name = "repo"
+path = "tests/repo.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "service_kv"
+path = "tests/service_kv.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "task_kv"
+path = "tests/task_kv.rs"
+required-features = ["test-support"]

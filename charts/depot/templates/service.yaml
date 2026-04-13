@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "depot.fullname" . }}
+  labels:
+    {{- include "depot.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    {{- if .Values.config.metricsListen }}
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "depot.selectorLabels" . | nindent 4 }}
+---
+{{/*
+Headless Service used by the StatefulSet (redb mode) for stable pod DNS.
+*/}}
+{{- if eq (include "depot.isStateful" .) "true" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "depot.fullname" . }}-headless
+  labels:
+    {{- include "depot.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "depot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+{{- end }}

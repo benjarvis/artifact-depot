@@ -1,0 +1,37 @@
+/* SPDX-FileCopyrightText: 2026 Artifact Depot Contributors */
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* ── Reset ── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background-color: var(--color-bg-page);
+}
+
+/* ── Base table ── */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+th {
+  font-weight: 600;
+  border-bottom: 2px solid var(--color-border-strong);
+}

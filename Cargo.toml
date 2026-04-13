@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "server",
+    "bench",
+    "test-support",
+    "core",
+    "ui",
+    "kv/*",
+    "blob/*",
+    "format/*",
+]
+resolver = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

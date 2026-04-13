@@ -1,0 +1,10 @@
+// SPDX-FileCopyrightText: 2026 Artifact Depot Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! Docker / OCI registry format handler — both repository logic and HTTP routes.
+
+pub mod api;
+pub mod store;
+
+pub use store::DockerStore;

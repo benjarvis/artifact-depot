@@ -1,0 +1,56 @@
+# AWS profile: three depot replicas against real AWS DynamoDB and real AWS S3.
+# Matches docker/aws/.
+#
+# AWS credentials are passed via env vars to each depot pod. For production
+# on EKS, prefer IRSA by setting serviceAccount.annotations with
+# "eks.amazonaws.com/role-arn" and leaving aws.enabled=false (no Secret).
+#
+# Install:
+#   helm install depot ./charts/depot -f charts/depot/values-aws.yaml \
+#     --set aws.accessKeyId=AKIA... \
+#     --set aws.secretAccessKey=... \
+#     --set aws.region=us-east-1 \
+#     --set blobStore.s3.bucket=my-depot-blobs \
+#     --set blobStore.s3.region=us-east-1
+
+replicaCount: 3
+
+config:
+  serverSecret: "change-me-to-a-random-32-byte-string"
+
+kvStore:
+  type: dynamodb
+  dynamodb:
+    tablePrefix: depot
+    region: us-east-1
+    # No endpointUrl -- uses real AWS DynamoDB.
+
+blobStore:
+  enabled: true
+  type: s3
+  name: default
+  s3:
+    bucket: my-depot-blobs  # override per environment
+    region: us-east-1
+    # No endpoint -- uses real AWS S3.
+    # Blob-store credentials fall back to the AWS Secret (aws.enabled=true)
+    # if not set here, so leave these empty unless you want per-store keys.
+    accessKey: ""
+    secretKey: ""
+
+# AWS credentials for depot (DynamoDB SDK). Override via --set or an
+# existing Secret. On EKS with IRSA, set aws.enabled=false and instead
+# annotate the ServiceAccount.
+aws:
+  enabled: true
+  accessKeyId: ""
+  secretAccessKey: ""
+  region: us-east-1
+
+tracing:
+  enabled: true
+  serviceName: depot
+  deploymentEnvironment: aws
+
+observability:
+  enabled: true

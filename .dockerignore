@@ -1,0 +1,7 @@
+target/
+build/
+*.redb
+blobs/
+depot/frontend/node_modules/
+depot/frontend/dist/
+.git/

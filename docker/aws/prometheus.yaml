@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: depot
+    static_configs:
+      - targets: ['depot-1:9090', 'depot-2:9090', 'depot-3:9090']

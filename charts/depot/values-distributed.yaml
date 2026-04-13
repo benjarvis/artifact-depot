@@ -1,0 +1,50 @@
+# Distributed on-prem profile: three depot replicas against an external
+# DynamoDB-compatible KV store (e.g. ScyllaDB Alternator) and an external
+# S3-compatible object store (e.g. Garage, MinIO). Matches docker/distributed/.
+#
+# Prerequisites (deploy separately, NOT part of this chart):
+#   - A DynamoDB-compatible endpoint reachable at the URL below.
+#   - An S3-compatible bucket reachable at the endpoint below, with the
+#     access key / secret key you configure.
+#
+# Install:
+#   helm install depot ./charts/depot -f charts/depot/values-distributed.yaml \
+#     --set kvStore.dynamodb.endpointUrl=http://scylladb.my-ns.svc:8000 \
+#     --set blobStore.s3.endpoint=http://garage.my-ns.svc:3900 \
+#     --set blobStore.s3.accessKey=GK... \
+#     --set blobStore.s3.secretKey=...
+
+replicaCount: 3
+
+config:
+  # Override with a random value per deployment. Changing after data is
+  # written prevents startup.
+  serverSecret: "change-me-to-a-random-32-byte-string"
+
+kvStore:
+  type: dynamodb
+  dynamodb:
+    tablePrefix: depot
+    region: onprem
+    endpointUrl: "http://scylladb:8000"  # override per environment
+
+blobStore:
+  enabled: true
+  type: s3
+  name: default
+  s3:
+    bucket: depot
+    region: garage
+    endpoint: "http://garage:3900"  # override per environment
+    # Set the two below via --set or an existing Secret reference.
+    accessKey: ""
+    secretKey: ""
+
+tracing:
+  enabled: true
+  serviceName: depot
+  deploymentEnvironment: onprem
+
+# Enable to deploy the full OTel stack alongside depot.
+observability:
+  enabled: true

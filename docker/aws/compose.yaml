@@ -1,0 +1,246 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Application
+  # ---------------------------------------------------------------------------
+
+  depot-1:
+    build:
+      context: ../..
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./depotd.toml:/etc/depot/depotd.toml:ro
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+    restart: unless-stopped
+
+  depot-2:
+    build:
+      context: ../..
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./depotd.toml:/etc/depot/depotd.toml:ro
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+    restart: unless-stopped
+
+  depot-3:
+    build:
+      context: ../..
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./depotd.toml:/etc/depot/depotd.toml:ro
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+    restart: unless-stopped
+
+  # Wait for depot, then create the S3 blob store pointing at real AWS S3.
+  depot-init:
+    image: alpine/curl:latest
+    depends_on:
+      - depot-1
+    restart: "no"
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - DEPOT_S3_BUCKET=${DEPOT_S3_BUCKET}
+      - DEPOT_ADMIN_PASSWORD=${DEPOT_ADMIN_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for depot..."
+        for i in $$(seq 1 30); do
+          if curl -sf http://depot-1:8080/api/v1/health >/dev/null 2>&1; then
+            echo "Depot is ready."
+            break
+          fi
+          if [ "$$i" = "30" ]; then echo "ERROR: depot did not start in 60s"; exit 1; fi
+          sleep 2
+        done
+
+        echo "Creating S3 blob store..."
+        code=$$(curl -s -o /dev/null -w "%{http_code}" \
+          -u "admin:$$DEPOT_ADMIN_PASSWORD" \
+          -X POST http://depot-1:8080/api/v1/stores \
+          -H "Content-Type: application/json" \
+          -d "{\"name\":\"default\",\"store_type\":\"s3\",\"bucket\":\"$$DEPOT_S3_BUCKET\",\"region\":\"$$AWS_REGION\",\"access_key\":\"$$AWS_ACCESS_KEY_ID\",\"secret_key\":\"$$AWS_SECRET_ACCESS_KEY\"}")
+
+        if [ "$$code" = "201" ]; then echo "Store created."
+        elif [ "$$code" = "409" ]; then echo "Store already exists."
+        else echo "ERROR: store creation failed (HTTP $$code)"; exit 1; fi
+
+  # ---------------------------------------------------------------------------
+  # Monitoring  (activate with: docker compose --profile monitoring up)
+  # ---------------------------------------------------------------------------
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    profiles: [monitoring]
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    profiles: [monitoring]
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/tempo
+        mc mb --ignore-existing local/loki
+        echo "MinIO buckets ready."
+
+  tempo:
+    image: grafana/tempo:2.10.3
+    profiles: [monitoring]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - tempo-data:/var/tempo
+    configs:
+      - source: tempo-config
+        target: /etc/tempo.yaml
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.1
+    profiles: [monitoring]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    configs:
+      - source: loki-config
+        target: /etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.149.0
+    profiles: [monitoring]
+    depends_on:
+      - tempo
+      - loki
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.11.1
+    profiles: [monitoring]
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.0.1
+    profiles: [monitoring]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana-dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/default.yaml:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+
+configs:
+  tempo-config:
+    content: |
+      stream_over_http_enabled: true
+      server:
+        http_listen_port: 3200
+      ingester:
+        max_block_duration: 5m
+        flush_check_period: 10s
+      distributor:
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+      storage:
+        trace:
+          backend: s3
+          s3:
+            bucket: tempo
+            endpoint: minio:9000
+            access_key: ${MINIO_ROOT_USER}
+            secret_key: ${MINIO_ROOT_PASSWORD}
+            insecure: true
+          wal:
+            path: /var/tempo/wal
+          block:
+            version: vParquet4
+      metrics_generator:
+        storage:
+          path: /var/tempo/generator/wal
+
+  loki-config:
+    content: |
+      auth_enabled: false
+      server:
+        http_listen_port: 3100
+      common:
+        ring:
+          instance_addr: 127.0.0.1
+          kvstore:
+            store: inmemory
+        replication_factor: 1
+        path_prefix: /loki
+      schema_config:
+        configs:
+          - from: "2024-01-01"
+            store: tsdb
+            object_store: s3
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+      storage_config:
+        tsdb_shipper:
+          active_index_directory: /loki/tsdb-index
+          cache_location: /loki/tsdb-cache
+        aws:
+          endpoint: http://minio:9000
+          bucketnames: loki
+          access_key_id: ${MINIO_ROOT_USER}
+          secret_access_key: ${MINIO_ROOT_PASSWORD}
+          s3forcepathstyle: true
+          insecure: true
+      limits_config:
+        allow_structured_metadata: true
+
+volumes:
+  minio-data:
+  tempo-data:

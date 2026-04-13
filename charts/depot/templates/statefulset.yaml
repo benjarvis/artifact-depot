@@ -1,0 +1,43 @@
+{{- if eq (include "depot.isStateful" .) "true" -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "depot.fullname" . }}
+  labels:
+    {{- include "depot.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "depot.fullname" . }}-headless
+  {{/* redb is single-writer: force replicas to 1 regardless of value. */}}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "depot.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "depot.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/secret-config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "depot.podSpec" . | nindent 6 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          {{- toYaml .Values.kvStore.redb.persistence.accessModes | nindent 10 }}
+        {{- with .Values.kvStore.redb.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.kvStore.redb.persistence.size | quote }}
+{{- end -}}
