@@ -20,7 +20,7 @@ env:
 
 jobs:
   ci:
-    name: lint · build · test
+    name: lint - build - test
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -73,62 +73,62 @@ jobs:
 
       # --- Lints (each step runs even if a previous one failed) ---
 
-      - name: Lint · cargo fmt
+      - name: Lint - cargo fmt
         if: success() || failure()
         run: cargo fmt --check
 
-      - name: Lint · cargo clippy
+      - name: Lint - cargo clippy
         if: success() || failure()
         run: cargo clippy -- -D warnings
 
-      - name: Lint · cargo-deny licenses
+      - name: Lint - cargo-deny licenses
         if: success() || failure()
         run: cargo deny check licenses
 
-      - name: Lint · cargo-deny advisories
+      - name: Lint - cargo-deny advisories
         if: success() || failure()
         run: cargo deny check advisories
 
-      - name: Lint · npm license-checker
+      - name: Lint - npm license-checker
         if: success() || failure()
         working-directory: ui/frontend
         run: npx --yes license-checker --failOn 'GPL-2.0;GPL-3.0;AGPL-3.0;AGPL-1.0;SSPL-1.0;EUPL-1.1;EUPL-1.2' > /dev/null
 
-      - name: Lint · npm audit
+      - name: Lint - npm audit
         if: success() || failure()
         working-directory: ui/frontend
         run: npm audit
 
-      - name: Lint · REUSE compliance
+      - name: Lint - REUSE compliance
         if: success() || failure()
         uses: fsfe/reuse-action@v3
 
       # --- Notices (prerequisite of build) ---
 
-      - name: Notices · cargo
+      - name: Notices - cargo
         run: bash scripts/generate-notices-cargo.sh
 
-      - name: Notices · npm
+      - name: Notices - npm
         run: bash scripts/generate-notices-npm.sh
 
-      - name: Notices · combined
+      - name: Notices - combined
         run: bash scripts/generate-notices.sh
 
       # --- Build ---
 
-      - name: Build · cargo build
+      - name: Build - cargo build
         run: cargo build
 
       # --- Tests ---
 
-      - name: Test · cargo test
+      - name: Test - cargo test
         run: cargo test -q
 
-      - name: Test · UI (Playwright in netns)
+      - name: Test - UI (Playwright in netns)
         run: sudo -E --preserve-env=PATH,HOME bash scripts/ui-test.sh --skip-build
 
-      - name: Test · DynamoDB (skipped unless JAR installed)
+      - name: Test - DynamoDB (skipped unless JAR installed)
         run: bash scripts/ext-test.sh dynamodb
 
-      - name: Test · Docker auth
+      - name: Test - Docker auth
         run: sudo -E --preserve-env=PATH,HOME bash scripts/ext-test.sh docker-auth
