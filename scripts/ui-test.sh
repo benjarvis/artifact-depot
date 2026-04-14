@@ -131,6 +131,10 @@ case "$STORE_HTTP" in
 esac
 echo "Bootstrap complete."
 
+# --- Ensure Playwright browsers are installed ---
+echo "Ensuring Playwright browsers are installed..."
+(cd "$FRONTEND_DIR" && npx playwright install chromium)
+
 # --- Run Playwright tests inside namespace ---
 echo "Running Playwright tests..."
 cd "$FRONTEND_DIR"

@@ -12,6 +12,9 @@ RUN apt-get -y update && \
     ln -s /root/.cargo/bin/* /usr/local/bin/ && \
     apt-get -y --no-install-recommends install iproute2 python3 default-jre-headless reuse mold gh
 
+# Rust workspace linters (cargo-deny, cargo-about)
+RUN cargo install cargo-deny cargo-about
+
 # Playwright system dependencies (Chromium on Ubuntu 24.04)
 RUN apt-get -y --no-install-recommends install \
     libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
@@ -22,12 +25,6 @@ RUN apt-get -y --no-install-recommends install \
     xfonts-cyrillic xfonts-scalable fonts-liberation fonts-ipafont-gothic \
     fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf && \
     rm -rf /var/lib/apt/lists/*
-
-# Frontend dependencies and Playwright browser
-COPY depot/frontend/package.json depot/frontend/package-lock.json /tmp/frontend/
-RUN cd /tmp/frontend && npm install && \
-    npx playwright install chromium && \
-    rm -rf /tmp/frontend
 
 # DynamoDB Local (for integration testing)
 ENV DYNAMODB_LOCAL_DIR=/usr/local/lib/dynamodb-local
