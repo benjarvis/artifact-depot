@@ -27,20 +27,23 @@ use depot_test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_repo_404() {
     let app = TestApp::new().await;
-    helpers::assert_nonexistent_repo_404(&app, "/pypi/no-such-repo/simple/").await;
+    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/simple/").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_non_pypi_repo_400() {
+    // Under the unified `/repository/{repo}/...` router, a pypi-shaped URL on a
+    // raw repo falls through to the generic artifact lookup and returns 404
+    // rather than 400 — URL shape is no longer tied to format.
     let app = TestApp::new().await;
     app.create_hosted_repo("raw-repo").await;
-    let req = app.auth_request(Method::GET, "/pypi/raw-repo/simple/", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/raw-repo/simple/", &app.admin_token());
     let (status, _) = app.call(req).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ===========================================================================
-// Upload (POST /pypi/{repo}/)
+// Upload (POST /repository/{repo}/)
 // ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -86,7 +89,7 @@ async fn test_upload_missing_name_400() {
 
     let req = axum::http::Request::builder()
         .method(Method::POST)
-        .uri("/pypi/pypi-noname/")
+        .uri("/repository/pypi-noname/")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -119,7 +122,7 @@ async fn test_upload_missing_version_400() {
 
     let req = axum::http::Request::builder()
         .method(Method::POST)
-        .uri("/pypi/pypi-nover/")
+        .uri("/repository/pypi-nover/")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -153,7 +156,7 @@ async fn test_upload_missing_content_400() {
 
     let req = axum::http::Request::builder()
         .method(Method::POST)
-        .uri("/pypi/pypi-nocontent/")
+        .uri("/repository/pypi-nocontent/")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -206,7 +209,7 @@ async fn test_upload_proxy_routes_to_hosted() {
     // Verify it landed on the member.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-proxy-member/simple/",
+        "/repository/pypi-proxy-member/simple/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -297,7 +300,7 @@ async fn test_upload_with_summary() {
 }
 
 // ===========================================================================
-// Simple index (GET /pypi/{repo}/simple/)
+// Simple index (GET /repository/{repo}/simple/)
 // ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -305,7 +308,7 @@ async fn test_hosted_index_empty() {
     let app = TestApp::new().await;
     app.create_pypi_repo("pypi-empty").await;
 
-    let req = app.auth_request(Method::GET, "/pypi/pypi-empty/simple/", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/pypi-empty/simple/", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = body.as_str().unwrap_or("");
@@ -342,7 +345,7 @@ async fn test_hosted_index_lists_projects() {
     );
     let _ = app.call(req).await;
 
-    let req = app.auth_request(Method::GET, "/pypi/pypi-idx/simple/", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/pypi-idx/simple/", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = body.as_str().unwrap_or("");
@@ -368,7 +371,7 @@ async fn test_cache_index_proxies_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-idx/simple/",
+        "/repository/pypi-cache-idx/simple/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -411,7 +414,7 @@ async fn test_proxy_index_aggregates_members() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-agg-proxy/simple/",
+        "/repository/pypi-agg-proxy/simple/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -422,7 +425,7 @@ async fn test_proxy_index_aggregates_members() {
 }
 
 // ===========================================================================
-// Project files (GET /pypi/{repo}/simple/{project}/)
+// Project files (GET /repository/{repo}/simple/{project}/)
 // ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -454,7 +457,7 @@ async fn test_hosted_project_files() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-proj/simple/my-project/",
+        "/repository/pypi-proj/simple/my-project/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -471,7 +474,7 @@ async fn test_hosted_project_not_found_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-no-proj/simple/nonexistent/",
+        "/repository/pypi-no-proj/simple/nonexistent/",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -498,7 +501,7 @@ async fn test_cache_project_fetches_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-proj/simple/requests/",
+        "/repository/pypi-cache-proj/simple/requests/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -515,7 +518,7 @@ async fn test_cache_project_upstream_down_no_cache_returns_error() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-dead/simple/requests/",
+        "/repository/pypi-cache-dead/simple/requests/",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -539,7 +542,7 @@ async fn test_cache_project_not_found_upstream_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-404/simple/nonexistent/",
+        "/repository/pypi-cache-404/simple/nonexistent/",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -567,7 +570,7 @@ async fn test_proxy_project_from_hosted() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-pp/simple/hosted-pkg/",
+        "/repository/pypi-pp/simple/hosted-pkg/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -610,7 +613,7 @@ async fn test_proxy_project_dedup_by_filename() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-dd/simple/dup-pkg/",
+        "/repository/pypi-dd/simple/dup-pkg/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -633,7 +636,7 @@ async fn test_proxy_project_not_found_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-pfnf-proxy/simple/nonexistent-pkg/",
+        "/repository/pypi-pfnf-proxy/simple/nonexistent-pkg/",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -641,7 +644,7 @@ async fn test_proxy_project_not_found_404() {
 }
 
 // ===========================================================================
-// Package download (GET /pypi/{repo}/packages/{name}/{version}/{filename})
+// Package download (GET /repository/{repo}/packages/{name}/{version}/{filename})
 // ===========================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -663,7 +666,7 @@ async fn test_hosted_download() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-dl/packages/dl-pkg/1.0.0/dl_pkg-1.0.0.tar.gz",
+        "/repository/pypi-dl/packages/dl-pkg/1.0.0/dl_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -689,7 +692,7 @@ async fn test_hosted_download_whl_content_type() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-whl/packages/whl-pkg/1.0.0/whl_pkg-1.0.0-py3-none-any.whl",
+        "/repository/pypi-whl/packages/whl-pkg/1.0.0/whl_pkg-1.0.0-py3-none-any.whl",
         &app.admin_token(),
     );
     let resp = app.call_resp(req).await;
@@ -722,7 +725,7 @@ async fn test_hosted_download_tar_gz_content_type() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-tgz/packages/tgz-pkg/1.0.0/tgz_pkg-1.0.0.tar.gz",
+        "/repository/pypi-tgz/packages/tgz-pkg/1.0.0/tgz_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let resp = app.call_resp(req).await;
@@ -744,7 +747,7 @@ async fn test_hosted_download_not_found_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-dlnf/packages/nope/1.0.0/nope-1.0.0.tar.gz",
+        "/repository/pypi-dlnf/packages/nope/1.0.0/nope-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -774,7 +777,7 @@ async fn test_cache_download_from_local() {
     // The download from the hosted repo should work.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cdl-hosted/packages/cached-pkg/1.0.0/cached_pkg-1.0.0.tar.gz",
+        "/repository/pypi-cdl-hosted/packages/cached-pkg/1.0.0/cached_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -804,7 +807,7 @@ async fn test_proxy_download_from_hosted() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-pdl/packages/proxy-dl-pkg/1.0.0/proxy_dl_pkg-1.0.0.tar.gz",
+        "/repository/pypi-pdl/packages/proxy-dl-pkg/1.0.0/proxy_dl_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -821,7 +824,7 @@ async fn test_proxy_download_not_found_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-pdlnf/packages/nothing/1.0.0/nothing-1.0.0.tar.gz",
+        "/repository/pypi-pdlnf/packages/nothing/1.0.0/nothing-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -868,7 +871,7 @@ async fn test_cache_download_fetches_upstream() {
     // First, fetch the project page to populate the index.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-dl/simple/fetch-pkg/",
+        "/repository/pypi-cache-dl/simple/fetch-pkg/",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -877,7 +880,7 @@ async fn test_cache_download_fetches_upstream() {
     // Download uses the normalized version path that extract_version_from_filename produces.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-dl/packages/fetch-pkg/1-0-0/fetch_pkg-1.0.0.tar.gz",
+        "/repository/pypi-cache-dl/packages/fetch-pkg/1-0-0/fetch_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -1074,7 +1077,7 @@ async fn test_delete_package_existing() {
     // Download should now 404.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-del/packages/del-pkg/1.0.0/del_pkg-1.0.0.tar.gz",
+        "/repository/pypi-del/packages/del-pkg/1.0.0/del_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -1127,7 +1130,7 @@ async fn test_cache_project_fresh_ttl_serves_from_cache() {
     // First fetch — populates cache and calls upstream.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-ttl/simple/cached-ttl-pkg/",
+        "/repository/pypi-cache-ttl/simple/cached-ttl-pkg/",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -1136,7 +1139,7 @@ async fn test_cache_project_fresh_ttl_serves_from_cache() {
     // Second fetch — TTL=3600 means cache is fresh, should NOT call upstream again.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-ttl/simple/cached-ttl-pkg/",
+        "/repository/pypi-cache-ttl/simple/cached-ttl-pkg/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -1178,7 +1181,7 @@ async fn test_cache_index_upstream_down_serves_stale() {
     // Upstream is unreachable — should serve stale cached index.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-stale/simple/",
+        "/repository/pypi-cache-stale/simple/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -1213,7 +1216,7 @@ async fn test_proxy_project_from_cache_member() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-pc-proxy/simple/cache-proxy-pkg/",
+        "/repository/pypi-pc-proxy/simple/cache-proxy-pkg/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -1245,7 +1248,7 @@ async fn test_project_page_requires_python_html_escaping() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-rp-esc/simple/esc-pkg/",
+        "/repository/pypi-rp-esc/simple/esc-pkg/",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -1272,7 +1275,7 @@ async fn test_hosted_download_zip_content_type() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-zip/packages/zip-pkg/1.0.0/zip_pkg-1.0.0.zip",
+        "/repository/pypi-zip/packages/zip-pkg/1.0.0/zip_pkg-1.0.0.zip",
         &app.admin_token(),
     );
     let resp = app.call_resp(req).await;
@@ -1336,7 +1339,7 @@ async fn test_cache_download_upstream_url_empty() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-empty-url/packages/empty-url-pkg/1.0.0/empty_url_pkg-1.0.0.tar.gz",
+        "/repository/pypi-cache-empty-url/packages/empty-url-pkg/1.0.0/empty_url_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -1395,7 +1398,7 @@ async fn test_cache_download_upstream_fails_502() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-cache-502/packages/fail-pkg/1.0.0/fail_pkg-1.0.0.tar.gz",
+        "/repository/pypi-cache-502/packages/fail-pkg/1.0.0/fail_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -1440,7 +1443,7 @@ async fn test_upload_replaces_existing_package() {
     // Download should return new content.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-replace/packages/replace-pkg/1.0.0/replace_pkg-1.0.0.tar.gz",
+        "/repository/pypi-replace/packages/replace-pkg/1.0.0/replace_pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -1479,7 +1482,7 @@ async fn test_upload_requires_auth() {
     // No auth header.
     let req = axum::http::Request::builder()
         .method(Method::POST)
-        .uri("/pypi/pypi-auth-up/")
+        .uri("/repository/pypi-auth-up/")
         .header(
             header::CONTENT_TYPE,
             format!("multipart/form-data; boundary={}", boundary),
@@ -1495,7 +1498,7 @@ async fn test_simple_index_requires_auth() {
     let app = TestApp::new().await;
     app.create_pypi_repo("pypi-auth-idx").await;
 
-    let req = app.request(Method::GET, "/pypi/pypi-auth-idx/simple/");
+    let req = app.request(Method::GET, "/repository/pypi-auth-idx/simple/");
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -1505,7 +1508,7 @@ async fn test_simple_project_requires_auth() {
     let app = TestApp::new().await;
     app.create_pypi_repo("pypi-auth-proj").await;
 
-    let req = app.request(Method::GET, "/pypi/pypi-auth-proj/simple/some-pkg/");
+    let req = app.request(Method::GET, "/repository/pypi-auth-proj/simple/some-pkg/");
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -1517,7 +1520,7 @@ async fn test_download_requires_auth() {
 
     let req = app.request(
         Method::GET,
-        "/pypi/pypi-auth-dl/packages/pkg/1.0.0/pkg-1.0.0.tar.gz",
+        "/repository/pypi-auth-dl/packages/pkg/1.0.0/pkg-1.0.0.tar.gz",
     );
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -1562,7 +1565,7 @@ async fn test_upload_wheel_and_sdist_for_same_version() {
 
     // Simple project page should list both files.
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/pypi/pypi-multi-file/simple/my-pkg/", &token);
+    let req = app.auth_request(Method::GET, "/repository/pypi-multi-file/simple/my-pkg/", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8(body.to_vec()).unwrap();
@@ -1575,7 +1578,7 @@ async fn test_upload_wheel_and_sdist_for_same_version() {
     // Download each file.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-multi-file/packages/my-pkg/1.0.0/my_pkg-1.0.0-py3-none-any.whl",
+        "/repository/pypi-multi-file/packages/my-pkg/1.0.0/my_pkg-1.0.0-py3-none-any.whl",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1584,7 +1587,7 @@ async fn test_upload_wheel_and_sdist_for_same_version() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-multi-file/packages/my-pkg/1.0.0/my-pkg-1.0.0.tar.gz",
+        "/repository/pypi-multi-file/packages/my-pkg/1.0.0/my-pkg-1.0.0.tar.gz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1637,7 +1640,7 @@ async fn test_proxy_download_from_multiple_hosted() {
     // Download from member 1 via proxy.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-dl-proxy/packages/pkg-one/1.0.0/pkg_one-1.0.0.tar.gz",
+        "/repository/pypi-dl-proxy/packages/pkg-one/1.0.0/pkg_one-1.0.0.tar.gz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1647,7 +1650,7 @@ async fn test_proxy_download_from_multiple_hosted() {
     // Download from member 2 via proxy.
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-dl-proxy/packages/pkg-two/2.0.0/pkg_two-2.0.0.tar.gz",
+        "/repository/pypi-dl-proxy/packages/pkg-two/2.0.0/pkg_two-2.0.0.tar.gz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1667,7 +1670,7 @@ async fn test_simple_project_empty_repo() {
 
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-empty-proj/simple/nonexistent/",
+        "/repository/pypi-empty-proj/simple/nonexistent/",
         &token,
     );
     let (status, _) = app.call(req).await;
@@ -1703,7 +1706,7 @@ async fn test_proxy_upload_and_download_roundtrip() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/pypi/pypi-prx/packages/prx-pkg/1.0.0/prx_pkg-1.0.0.tar.gz",
+        "/repository/pypi-prx/packages/prx-pkg/1.0.0/prx_pkg-1.0.0.tar.gz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1711,7 +1714,7 @@ async fn test_proxy_upload_and_download_roundtrip() {
     assert_eq!(downloaded, data);
 
     // Simple index through proxy should list the project.
-    let req = app.auth_request(Method::GET, "/pypi/pypi-prx/simple/", &token);
+    let req = app.auth_request(Method::GET, "/repository/pypi-prx/simple/", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8(body.to_vec()).unwrap();

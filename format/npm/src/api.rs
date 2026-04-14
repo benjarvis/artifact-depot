@@ -8,10 +8,8 @@
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    Extension,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -25,7 +23,7 @@ use depot_core::error::DepotError;
 use depot_core::format_state::FormatState;
 use depot_core::service;
 use depot_core::store::kv::{
-    ArtifactFormat, Capability, RepoConfig, RepoKind, RepoType, CURRENT_RECORD_VERSION,
+    ArtifactFormat, RepoConfig, RepoKind, RepoType, CURRENT_RECORD_VERSION,
 };
 
 store_from_config_fn!(npm_store_from_config, NpmStore);
@@ -38,7 +36,26 @@ pub async fn try_handle_repository_path(
     state: &FormatState,
     config: &RepoConfig,
     path: &str,
+    query: Option<&str>,
 ) -> Option<Response> {
+    if path == "-/v1/search" {
+        // Parse query string for text= and size= params
+        let mut text = String::new();
+        let mut size: usize = 20; // default
+        if let Some(q) = query {
+            for part in q.split('&') {
+                if let Some(v) = part.strip_prefix("text=") {
+                    text = urlencoding::decode(v).unwrap_or_default().into_owned();
+                } else if let Some(v) = part.strip_prefix("size=") {
+                    if let Ok(n) = v.parse::<usize>() {
+                        size = n;
+                    }
+                }
+            }
+        }
+        return Some(search_packages(state, config, &text, size).await);
+    }
+
     // Scoped package: @scope/package or @scope/package/-/filename
     if let Some(rest) = path.strip_prefix('@') {
         let parts: Vec<&str> = rest.splitn(4, '/').collect();
@@ -84,6 +101,119 @@ async fn get_packument_inner_from_config(
     }
 }
 
+// =============================================================================
+// /repository/{repo}/ dispatch for npm repos (writes)
+// =============================================================================
+
+/// Handle a write request under `/repository/{repo}/<path>` for an npm repo.
+/// Returns `None` if the (method, path) combination is not an npm write.
+pub async fn try_handle_repository_write(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &axum::http::Method,
+    path: &str,
+    _headers: &axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Option<axum::response::Response> {
+    // GET /-/whoami — doesn't touch the repo config.
+    if method == axum::http::Method::GET && path == "-/whoami" {
+        let body = serde_json::json!({ "username": user.0 });
+        return Some(
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&body).unwrap_or_default(),
+            )
+                .into_response(),
+        );
+    }
+
+    // PUT /-/user/{anything} — npm login/adduser.
+    if method == axum::http::Method::PUT && path.starts_with("-/user/") {
+        let bytes = match depot_core::api_helpers::body_to_bytes(body, usize::MAX).await {
+            Ok(b) => b,
+            Err(e) => return Some(e),
+        };
+        let payload: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                return Some(
+                    DepotError::BadRequest(format!("invalid JSON: {e}")).into_response(),
+                );
+            }
+        };
+        let name = match payload.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => {
+                return Some(
+                    DepotError::BadRequest("missing 'name' field".into()).into_response(),
+                );
+            }
+        };
+        let password = match payload.get("password").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => {
+                return Some(
+                    DepotError::BadRequest("missing 'password' field".into()).into_response(),
+                );
+            }
+        };
+        let authenticated = match state.auth.authenticate(name, password).await {
+            Ok(u) => u,
+            Err(e) => return Some(e.into_response()),
+        };
+        return Some(match authenticated {
+            Some(u) => {
+                let token = match state.auth.create_user_token(&u).await {
+                    Ok(t) => t,
+                    Err(e) => return Some(e.into_response()),
+                };
+                let body = serde_json::json!({ "ok": true, "token": token });
+                (
+                    StatusCode::CREATED,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    serde_json::to_string(&body).unwrap_or_default(),
+                )
+                    .into_response()
+            }
+            None => StatusCode::UNAUTHORIZED.into_response(),
+        });
+    }
+
+    // PUT @{scope}/{package} — publish (scoped).
+    if method == axum::http::Method::PUT {
+        if let Some(rest) = path.strip_prefix('@') {
+            let parts: Vec<&str> = rest.splitn(2, '/').collect();
+            if let [scope, pkg] = parts.as_slice() {
+                if !scope.is_empty() && !pkg.is_empty() && !pkg.contains('/') {
+                    let package = format!("@{scope}/{pkg}");
+                    let bytes =
+                        match depot_core::api_helpers::body_to_bytes(body, usize::MAX).await {
+                            Ok(b) => b,
+                            Err(e) => return Some(e),
+                        };
+                    return Some(
+                        publish_inner(state, user, &config.name, &package, &bytes).await,
+                    );
+                }
+            }
+            return None;
+        }
+
+        // PUT {package} (unscoped, no '/').
+        if !path.is_empty() && !path.contains('/') {
+            let bytes = match depot_core::api_helpers::body_to_bytes(body, usize::MAX).await {
+                Ok(b) => b,
+                Err(e) => return Some(e),
+            };
+            return Some(publish_inner(state, user, &config.name, path, &bytes).await);
+        }
+    }
+
+    None
+}
+
 async fn download_tarball_inner_from_config(
     state: &FormatState,
     config: &RepoConfig,
@@ -104,117 +234,6 @@ async fn download_tarball_inner_from_config(
     }
 }
 
-// =============================================================================
-// GET /-/whoami — npm whoami
-// =============================================================================
-
-pub async fn whoami(Extension(user): Extension<AuthenticatedUser>) -> Result<Response, DepotError> {
-    let body = serde_json::json!({ "username": user.0 });
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&body).unwrap_or_default(),
-    )
-        .into_response())
-}
-
-// =============================================================================
-// PUT /-/user/org.couchdb.user:{username} — npm login/adduser
-// =============================================================================
-
-pub async fn npm_login(
-    State(state): State<FormatState>,
-    body: axum::body::Bytes,
-) -> Result<Response, DepotError> {
-    let payload: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(DepotError::BadRequest(format!("invalid JSON: {e}")));
-        }
-    };
-
-    let name = match payload.get("name").and_then(|v| v.as_str()) {
-        Some(n) => n,
-        None => {
-            return Err(DepotError::BadRequest("missing 'name' field".into()));
-        }
-    };
-    let password = match payload.get("password").and_then(|v| v.as_str()) {
-        Some(p) => p,
-        None => {
-            return Err(DepotError::BadRequest("missing 'password' field".into()));
-        }
-    };
-
-    match state.auth.authenticate(name, password).await? {
-        Some(user) => {
-            let token = state.auth.create_user_token(&user).await?;
-            let body = serde_json::json!({ "ok": true, "token": token });
-            Ok((
-                StatusCode::CREATED,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&body).unwrap_or_default(),
-            )
-                .into_response())
-        }
-        None => Ok(StatusCode::UNAUTHORIZED.into_response()),
-    }
-}
-
-// =============================================================================
-// GET /npm/{repo}/{package} — get packument (unscoped)
-// =============================================================================
-
-pub async fn get_packument(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, package)): Path<(String, String)>,
-) -> Result<Response, DepotError> {
-    Ok(get_packument_inner(&state, &user, &repo_name, &package).await)
-}
-
-// =============================================================================
-// GET /npm/{repo}/@{scope}/{package} — get packument (scoped)
-// =============================================================================
-
-pub async fn get_packument_scoped(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, scope, package)): Path<(String, String, String)>,
-) -> Result<Response, DepotError> {
-    let full_name = format!("@{scope}/{package}");
-    Ok(get_packument_inner(&state, &user, &repo_name, &full_name).await)
-}
-
-async fn get_packument_inner(
-    state: &FormatState,
-    user: &AuthenticatedUser,
-    repo_name: &str,
-    package: &str,
-) -> Response {
-    let config =
-        match depot_core::api_helpers::validate_format_repo(state, repo_name, ArtifactFormat::Npm)
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => return e.into_response(),
-        };
-
-    if let Err(e) = state
-        .auth
-        .check_permission(&user.0, repo_name, Capability::Read)
-        .await
-    {
-        return e.into_response();
-    }
-
-    match config.repo_type() {
-        RepoType::Hosted => hosted_packument(state, repo_name, package).await,
-        RepoType::Cache => cache_packument(state, &config, package).await,
-        RepoType::Proxy => proxy_packument(state, &config, package).await,
-    }
-}
-
 async fn hosted_packument(state: &FormatState, repo_name: &str, package: &str) -> Response {
     let (blobs, blob_config) =
         match depot_core::api_helpers::resolve_repo_blob_store(state, repo_name).await {
@@ -230,7 +249,7 @@ async fn hosted_packument(state: &FormatState, repo_name: &str, package: &str) -
         updater: &state.updater,
     };
 
-    let base_url = format!("/npm/{repo_name}");
+    let base_url = format!("/repository/{repo_name}");
     match store.get_packument(package, &base_url).await {
         Ok(Some(packument)) => (
             StatusCode::OK,
@@ -277,7 +296,7 @@ async fn cache_packument(state: &FormatState, config: &RepoConfig, package: &str
             cache_upstream_packument(state, config, package, &upstream_packument).await;
 
             // Rewrite tarball URLs and serve
-            let base_url = format!("/npm/{}", config.name);
+            let base_url = format!("/repository/{}", config.name);
             let rewritten = rewrite_packument_urls(&upstream_packument, &base_url);
             (
                 StatusCode::OK,
@@ -290,7 +309,7 @@ async fn cache_packument(state: &FormatState, config: &RepoConfig, package: &str
         Err(e) => {
             tracing::warn!(error = %e, "upstream fetch failed, serving stale cache");
             // Serve stale cache
-            let base_url = format!("/npm/{}", config.name);
+            let base_url = format!("/repository/{}", config.name);
             match store.get_packument(package, &base_url).await {
                 Ok(Some(packument)) => (
                     StatusCode::OK,
@@ -465,7 +484,7 @@ async fn proxy_packument(state: &FormatState, config: &RepoConfig, package: &str
     }
 
     // Re-merge from members.
-    let base_url = format!("/npm/{}", config.name);
+    let base_url = format!("/repository/{}", config.name);
     let mut merged_versions = serde_json::Map::new();
     let mut merged_dist_tags: HashMap<String, String> = HashMap::new();
     let mut merged_time = serde_json::Map::new();
@@ -539,69 +558,6 @@ async fn proxy_packument(state: &FormatState, config: &RepoConfig, package: &str
         json,
     )
         .into_response()
-}
-
-// =============================================================================
-// GET /npm/{repo}/{package}/-/{filename} — download tarball (unscoped)
-// =============================================================================
-
-pub async fn download_tarball(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, package, filename)): Path<(String, String, String)>,
-) -> Result<Response, DepotError> {
-    Ok(download_tarball_inner(&state, &user, &repo_name, &package, &filename).await)
-}
-
-// =============================================================================
-// GET /npm/{repo}/@{scope}/{package}/-/{filename} — download tarball (scoped)
-// =============================================================================
-
-pub async fn download_tarball_scoped(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, scope, package, filename)): Path<(String, String, String, String)>,
-) -> Result<Response, DepotError> {
-    let full_name = format!("@{scope}/{package}");
-    Ok(download_tarball_inner(&state, &user, &repo_name, &full_name, &filename).await)
-}
-
-async fn download_tarball_inner(
-    state: &FormatState,
-    user: &AuthenticatedUser,
-    repo_name: &str,
-    package: &str,
-    filename: &str,
-) -> Response {
-    let config =
-        match depot_core::api_helpers::validate_format_repo(state, repo_name, ArtifactFormat::Npm)
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => return e.into_response(),
-        };
-
-    if let Err(e) = state
-        .auth
-        .check_permission(&user.0, repo_name, Capability::Read)
-        .await
-    {
-        return e.into_response();
-    }
-
-    // Extract version from filename: {bare_name}-{version}.tgz
-    let version = match extract_version_from_filename(filename, package) {
-        Some(v) => v,
-        None => {
-            return DepotError::BadRequest("invalid tarball filename".into()).into_response();
-        }
-    };
-
-    match config.repo_type() {
-        RepoType::Hosted => hosted_download(state, repo_name, package, &version, filename).await,
-        RepoType::Cache => cache_download(state, &config, package, &version, filename).await,
-        RepoType::Proxy => proxy_download(state, &config, package, &version, filename).await,
-    }
 }
 
 /// Extract version from an npm tarball filename.
@@ -830,33 +786,6 @@ async fn proxy_download(
     DepotError::NotFound("tarball not found in any member".into()).into_response()
 }
 
-// =============================================================================
-// PUT /npm/{repo}/{package} — publish (unscoped)
-// =============================================================================
-
-pub async fn publish(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, package)): Path<(String, String)>,
-    body: axum::body::Bytes,
-) -> Result<Response, DepotError> {
-    Ok(publish_inner(&state, &user, &repo_name, &package, &body).await)
-}
-
-// =============================================================================
-// PUT /npm/{repo}/@{scope}/{package} — publish (scoped)
-// =============================================================================
-
-pub async fn publish_scoped(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, scope, package)): Path<(String, String, String)>,
-    body: axum::body::Bytes,
-) -> Result<Response, DepotError> {
-    let full_name = format!("@{scope}/{package}");
-    Ok(publish_inner(&state, &user, &repo_name, &full_name, &body).await)
-}
-
 async fn publish_inner(
     state: &FormatState,
     user: &AuthenticatedUser,
@@ -1013,10 +942,7 @@ async fn publish_inner(
     StatusCode::OK.into_response()
 }
 
-// =============================================================================
-// GET /npm/{repo}/-/v1/search — search packages
-// =============================================================================
-
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct SearchQuery {
     text: Option<String>,
@@ -1028,37 +954,35 @@ fn default_search_size() -> usize {
     20
 }
 
-pub async fn search(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-    Query(query): Query<SearchQuery>,
-) -> Result<Response, DepotError> {
-    let config =
-        depot_core::api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Npm)
-            .await?;
-
-    state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await?;
-
-    let blobs = state.blob_store(&config.store).await?;
+/// Implementation of npm `-/v1/search` used by the `try_handle_repository_path` dispatcher.
+async fn search_packages(
+    state: &FormatState,
+    config: &RepoConfig,
+    text: &str,
+    size: usize,
+) -> Response {
+    let blobs = match state.blob_store(&config.store).await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
     let store = NpmStore {
-        repo: &repo_name,
+        repo: &config.name,
         kv: state.kv.as_ref(),
         blobs: blobs.as_ref(),
         store: &config.store,
         updater: &state.updater,
     };
 
-    let packages = store.list_packages().await?;
+    let packages = match store.list_packages().await {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
 
-    let text = query.text.unwrap_or_default().to_lowercase();
+    let text_lower = text.to_lowercase();
     let filtered: Vec<_> = packages
         .into_iter()
-        .filter(|name| text.is_empty() || name.contains(&text))
-        .take(query.size)
+        .filter(|name| text_lower.is_empty() || name.contains(&text_lower))
+        .take(size)
         .collect();
 
     let mut objects: Vec<serde_json::Value> = Vec::new();
@@ -1082,10 +1006,10 @@ pub async fn search(
 
     let result = serde_json::json!({ "objects": objects });
 
-    Ok((
+    (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
         serde_json::to_string(&result).unwrap_or_default(),
     )
-        .into_response())
+        .into_response()
 }

@@ -5,7 +5,7 @@
 use axum::{
     extract::DefaultBodyLimit,
     middleware,
-    routing::{delete, get, head, patch, post, put},
+    routing::{get, head, patch, post},
     Router,
 };
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -18,14 +18,7 @@ use crate::server::api::{
 };
 use crate::server::infra::event_stream;
 use crate::server::infra::state::AppState;
-use depot_format_apt::api as apt;
-use depot_format_cargo::api as cargo;
 use depot_format_docker::api as docker;
-use depot_format_golang::api as golang;
-use depot_format_helm::api as helm;
-use depot_format_npm::api as npm;
-use depot_format_pypi::api as pypi;
-use depot_format_yum::api as yum;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -325,15 +318,21 @@ pub fn build_router(state: AppState, metrics_handle: Option<PrometheusHandle>) -
         .route("/service/rest/v1/assets", get(nexus_compat::search_assets))
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT));
 
-    // --- Artifact upload route — dynamic limit from settings ---
+    // --- Unified artifact/format route — dynamic limit from settings ---
+    //
+    // The single `/repository/{*rest}` catch-all matches every shape of artifact
+    // URL including the bare `/repository/{repo}` (e.g. PyPI twine upload) and
+    // the deepest `/repository/{repo}/{a}/{b}/...` paths. Each handler splits
+    // `rest` on the first `/` into `(repo_name, path)` and dispatches to the
+    // matching format crate based on the repository's configured format.
     let artifact_routes = Router::new()
         .route(
-            "/repository/{repo}/{*path}",
+            "/repository/{*rest}",
             head(artifacts::head_artifact)
                 .get(artifacts::get_artifact)
                 .put(artifacts::put_artifact)
-                .post(artifacts::docker_v2_any)
-                .patch(artifacts::docker_v2_any)
+                .post(artifacts::any_format_request)
+                .patch(artifacts::any_format_request)
                 .delete(artifacts::delete_artifact),
         )
         .layer(DefaultBodyLimit::disable())
@@ -406,43 +405,6 @@ pub fn build_router(state: AppState, metrics_handle: Option<PrometheusHandle>) -
         .merge(docker_manifest_routes)
         .merge(docker_upload_routes);
 
-    // PyPI routes — split upload (artifact limit) from read-only (default).
-    let pypi_upload_routes = Router::new()
-        .route("/pypi/{repo}/", post(pypi::upload))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::server::infra::middleware::dynamic_body_limit,
-        ));
-
-    let pypi_read_routes = Router::new()
-        .route("/pypi/{repo}/simple/", get(pypi::simple_index))
-        .route("/pypi/{repo}/simple/{project}/", get(pypi::simple_project))
-        .route(
-            "/pypi/{repo}/packages/{name}/{version}/{filename}",
-            get(pypi::download_package),
-        );
-
-    // APT routes — split upload (artifact limit) from read-only (default).
-    let apt_upload_routes = Router::new()
-        .route("/apt/{repo}/upload", post(apt::upload))
-        .route("/apt/{repo}/snapshots", post(apt::create_snapshot))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::server::infra::middleware::dynamic_body_limit,
-        ));
-
-    // YUM routes — split upload (artifact limit) from read-only (default).
-    let yum_upload_routes = Router::new()
-        .route("/yum/{repo}/upload", post(yum::upload))
-        .route("/yum/{repo}/snapshots", post(yum::create_snapshot))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::server::infra::middleware::dynamic_body_limit,
-        ));
-
     // Nexus-compatible component list + upload (dynamic body limit for large RPMs;
     // irrelevant for GET which has no request body).
     let nexus_upload_routes = Router::new()
@@ -456,151 +418,6 @@ pub fn build_router(state: AppState, metrics_handle: Option<PrometheusHandle>) -
             crate::server::infra::middleware::dynamic_body_limit,
         ));
 
-    let yum_read_routes = Router::new()
-        .route("/yum/{repo}/repodata/repomd.xml", get(yum::get_repomd))
-        .route(
-            "/yum/{repo}/repodata/repomd.xml.asc",
-            get(yum::get_repomd_asc),
-        )
-        .route(
-            "/yum/{repo}/repodata/repomd.xml.key",
-            get(yum::get_public_key),
-        )
-        .route(
-            "/yum/{repo}/repodata/{filename}",
-            get(yum::get_repodata_file),
-        )
-        .route("/yum/{repo}/{*path}", get(yum::download_package))
-        .route(
-            "/yum/{repo}/snapshots/{snapshot}/repodata/repomd.xml",
-            get(yum::get_snapshot_repomd),
-        )
-        .route(
-            "/yum/{repo}/snapshots/{snapshot}/repodata/{filename}",
-            get(yum::get_snapshot_repodata_file),
-        );
-
-    // npm routes — split upload (artifact limit) from read-only (default).
-    let npm_write_routes = Router::new()
-        .route("/npm/{repo}/{package}", put(npm::publish))
-        .route("/npm/{repo}/@{scope}/{package}", put(npm::publish_scoped))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::server::infra::middleware::dynamic_body_limit,
-        ));
-
-    let npm_auth_routes = Router::new()
-        .route("/-/whoami", get(npm::whoami))
-        .route("/-/user/{user_path}", put(npm::npm_login));
-
-    let npm_read_routes = Router::new()
-        .route("/npm/{repo}/-/v1/search", get(npm::search))
-        .route(
-            "/npm/{repo}/{package}/-/{filename}",
-            get(npm::download_tarball),
-        )
-        .route(
-            "/npm/{repo}/@{scope}/{package}/-/{filename}",
-            get(npm::download_tarball_scoped),
-        )
-        .route("/npm/{repo}/{package}", get(npm::get_packument))
-        .route(
-            "/npm/{repo}/@{scope}/{package}",
-            get(npm::get_packument_scoped),
-        );
-
-    let apt_read_routes = Router::new()
-        .route(
-            "/apt/{repo}/dists/{distribution}/Release",
-            get(apt::get_release),
-        )
-        .route(
-            "/apt/{repo}/dists/{distribution}/InRelease",
-            get(apt::get_in_release),
-        )
-        .route(
-            "/apt/{repo}/dists/{distribution}/Release.gpg",
-            get(apt::get_release_gpg),
-        )
-        .route(
-            "/apt/{repo}/dists/{distribution}/{component}/{arch_dir}/Packages",
-            get(apt::get_packages),
-        )
-        .route(
-            "/apt/{repo}/dists/{distribution}/{component}/{arch_dir}/Packages.gz",
-            get(apt::get_packages_gz),
-        )
-        .route(
-            "/apt/{repo}/dists/{distribution}/{component}/{arch_dir}/by-hash/SHA256/{hash}",
-            get(apt::get_by_hash),
-        )
-        .route(
-            "/apt/{repo}/pool/{component}/{prefix}/{package}/{filename}",
-            get(apt::download_package),
-        )
-        .route("/apt/{repo}/public.key", get(apt::get_public_key))
-        .route("/apt/{repo}/distributions", get(apt::list_distributions));
-
-    // Golang routes — split upload (artifact limit) from read-only (default).
-    let golang_upload_routes = Router::new()
-        .route("/golang/{repo}/upload", post(golang::upload))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::server::infra::middleware::dynamic_body_limit,
-        ));
-
-    let golang_read_routes = Router::new().route("/golang/{repo}/{*path}", get(golang::golang_get));
-
-    // Helm routes — split upload (artifact limit) from read-only (default).
-    let helm_upload_routes = Router::new()
-        .route("/helm/{repo}/upload", post(helm::upload))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::server::infra::middleware::dynamic_body_limit,
-        ));
-
-    let helm_read_routes = Router::new()
-        .route("/helm/{repo}/index.yaml", get(helm::get_index))
-        .route("/helm/{repo}/charts/{filename}", get(helm::download_chart));
-
-    // Cargo registry routes — split upload (artifact limit) from read-only (default).
-    let cargo_upload_routes = Router::new()
-        .route("/cargo/{repo}/api/v1/crates/new", put(cargo::publish))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::server::infra::middleware::dynamic_body_limit,
-        ));
-
-    let cargo_read_routes = Router::new()
-        .route("/cargo/{repo}/index/config.json", get(cargo::config_json))
-        .route("/cargo/{repo}/index/1/{name}", get(cargo::get_index_entry))
-        .route("/cargo/{repo}/index/2/{name}", get(cargo::get_index_entry))
-        .route(
-            "/cargo/{repo}/index/3/{first}/{name}",
-            get(cargo::get_index_entry),
-        )
-        .route(
-            "/cargo/{repo}/index/{p1}/{p2}/{name}",
-            get(cargo::get_index_entry),
-        )
-        .route(
-            "/cargo/{repo}/api/v1/crates/{crate_name}/{version}/download",
-            get(cargo::download),
-        )
-        .route(
-            "/cargo/{repo}/api/v1/crates/{crate_name}/{version}/yank",
-            delete(cargo::yank),
-        )
-        .route(
-            "/cargo/{repo}/api/v1/crates/{crate_name}/{version}/unyank",
-            put(cargo::unyank),
-        )
-        .route("/cargo/{repo}/api/v1/crates", get(cargo::search));
-
     let swagger_routes = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi_spec()))
         .layer(middleware::from_fn(
@@ -613,22 +430,7 @@ pub fn build_router(state: AppState, metrics_handle: Option<PrometheusHandle>) -
         .merge(api_json_routes)
         .merge(artifact_routes)
         .merge(docker_routes)
-        .merge(pypi_upload_routes)
-        .merge(pypi_read_routes)
-        .merge(apt_upload_routes)
-        .merge(apt_read_routes)
-        .merge(golang_upload_routes)
-        .merge(golang_read_routes)
-        .merge(helm_upload_routes)
-        .merge(helm_read_routes)
-        .merge(cargo_upload_routes)
-        .merge(cargo_read_routes)
-        .merge(yum_upload_routes)
-        .merge(yum_read_routes)
         .merge(nexus_upload_routes)
-        .merge(npm_write_routes)
-        .merge(npm_read_routes)
-        .merge(npm_auth_routes)
         .fallback_service(depot_ui::ui_routes())
         .layer(middleware::from_fn_with_state(
             state.clone(),

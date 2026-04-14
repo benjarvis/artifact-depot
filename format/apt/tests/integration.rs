@@ -22,13 +22,13 @@ use depot_test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_repo_404() {
     let app = TestApp::new().await;
-    helpers::assert_nonexistent_repo_404(&app, "/apt/no-such-repo/dists/stable/Release").await;
+    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/dists/stable/Release").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_non_apt_format_rejected() {
     let app = TestApp::new().await;
-    helpers::assert_wrong_format_rejected(&app, "/apt/raw-repo/dists/stable/Release").await;
+    helpers::assert_wrong_format_rejected(&app, "/repository/raw-repo/dists/stable/Release").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -62,7 +62,7 @@ async fn test_upload_and_packages() {
     // Fetch Packages
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-hosted/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-hosted/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -92,7 +92,7 @@ async fn test_upload_and_release() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/apt/apt-rel/dists/stable/Release", &token);
+    let req = app.auth_request(Method::GET, "/repository/apt-rel/dists/stable/Release", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -116,7 +116,7 @@ async fn test_upload_and_inrelease() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/apt/apt-inrel/dists/stable/InRelease", &token);
+    let req = app.auth_request(Method::GET, "/repository/apt-inrel/dists/stable/InRelease", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -143,7 +143,7 @@ async fn test_packages_gz() {
     // Get plain Packages
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-gz/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-gz/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, plain_body) = app.call_raw(req).await;
@@ -151,7 +151,7 @@ async fn test_packages_gz() {
     // Get Packages.gz
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-gz/dists/stable/main/binary-amd64/Packages.gz",
+        "/repository/apt-gz/dists/stable/main/binary-amd64/Packages.gz",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -185,7 +185,7 @@ async fn test_pool_download() {
     // Read Packages to find the pool path
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-pool/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-pool/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, packages_bytes) = app.call_raw(req).await;
@@ -199,7 +199,7 @@ async fn test_pool_download() {
     let pool_path = filename_line.trim_start_matches("Filename:").trim();
 
     // Download from pool
-    let req = app.auth_request(Method::GET, &format!("/apt/apt-pool/{}", pool_path), &token);
+    let req = app.auth_request(Method::GET, &format!("/repository/apt-pool/{}", pool_path), &token);
     let (status, downloaded) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, deb, "downloaded .deb should match uploaded");
@@ -223,7 +223,7 @@ async fn test_multiple_packages() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-multi/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-multi/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -251,7 +251,7 @@ async fn test_package_replacement() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-replace/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-replace/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -275,7 +275,7 @@ async fn test_public_key() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/apt/apt-key/public.key", &token);
+    let req = app.auth_request(Method::GET, "/repository/apt-key/public.key", &token);
     let resp = app.call_resp(req).await;
     // Key may or may not be available depending on whether signing was set up
     let status = resp.status();
@@ -314,7 +314,7 @@ async fn test_multi_arch() {
     assert_eq!(status, StatusCode::OK);
 
     // Check Release lists both architectures
-    let req = app.auth_request(Method::GET, "/apt/apt-arch/dists/stable/Release", &token);
+    let req = app.auth_request(Method::GET, "/repository/apt-arch/dists/stable/Release", &token);
     let (_, body) = app.call_raw(req).await;
     let release = String::from_utf8(body).unwrap();
     assert!(release.contains("amd64"), "Release should list amd64");
@@ -323,7 +323,7 @@ async fn test_multi_arch() {
     // Check each arch has its own Packages
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-arch/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-arch/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -331,7 +331,7 @@ async fn test_multi_arch() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-arch/dists/stable/main/binary-arm64/Packages",
+        "/repository/apt-arch/dists/stable/main/binary-arm64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -352,7 +352,7 @@ async fn test_arch_all_merged() {
     // arch:all should appear in binary-amd64 Packages
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-all/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-all/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -393,7 +393,7 @@ async fn test_custom_component() {
     // The pool path should be under contrib
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-comp/dists/stable/contrib/binary-amd64/Packages",
+        "/repository/apt-comp/dists/stable/contrib/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -433,7 +433,7 @@ async fn test_proxy_merged_packages() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-proxy/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-proxy/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -458,7 +458,7 @@ async fn test_proxy_pool_download() {
     // Read pool path from member's Packages
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-ph/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-ph/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -470,7 +470,7 @@ async fn test_proxy_pool_download() {
     let pool_path = filename_line.trim_start_matches("Filename:").trim();
 
     // Download through proxy
-    let req = app.auth_request(Method::GET, &format!("/apt/apt-pp/{}", pool_path), &token);
+    let req = app.auth_request(Method::GET, &format!("/repository/apt-pp/{}", pool_path), &token);
     let (status, downloaded) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, deb, "proxy download should match original");
@@ -498,7 +498,7 @@ async fn test_proxy_upload_routes_to_member() {
     // Verify the package ended up in the hosted member
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-write-target/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-write-target/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -532,7 +532,7 @@ async fn test_upload_missing_file_field() {
 
     let req = Request::builder()
         .method(Method::POST)
-        .uri("/apt/apt-nofile/upload")
+        .uri("/repository/apt-nofile/upload")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -585,7 +585,7 @@ async fn test_snapshot_creation() {
     // Trigger metadata rebuild by fetching Packages
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-snap/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -594,7 +594,7 @@ async fn test_snapshot_creation() {
     // Create snapshot
     let req = app.json_request(
         Method::POST,
-        "/apt/apt-snap/snapshots",
+        "/repository/apt-snap/snapshots",
         &token,
         serde_json::json!({ "source": "stable", "name": "stable-20260320" }),
     );
@@ -604,7 +604,7 @@ async fn test_snapshot_creation() {
     // Snapshot should be accessible via dists path
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap/dists/stable-20260320/Release",
+        "/repository/apt-snap/dists/stable-20260320/Release",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -641,7 +641,7 @@ async fn test_snapshot_immutability() {
     // Trigger metadata rebuild
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-immut/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-immut/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -650,7 +650,7 @@ async fn test_snapshot_immutability() {
     // Create snapshot
     let req = app.json_request(
         Method::POST,
-        "/apt/apt-immut/snapshots",
+        "/repository/apt-immut/snapshots",
         &token,
         serde_json::json!({ "source": "stable", "name": "frozen" }),
     );
@@ -666,7 +666,7 @@ async fn test_snapshot_immutability() {
     // Snapshot Packages should NOT contain the new package
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-immut/dists/frozen/main/binary-amd64/Packages",
+        "/repository/apt-immut/dists/frozen/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -683,7 +683,7 @@ async fn test_snapshot_immutability() {
     // Live distribution should contain both
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-immut/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-immut/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (_, body) = app.call_raw(req).await;
@@ -707,7 +707,7 @@ async fn test_snapshot_nonexistent_distribution() {
     // Try to snapshot a distribution that doesn't exist
     let req = app.json_request(
         Method::POST,
-        "/apt/apt-nosnap/snapshots",
+        "/repository/apt-nosnap/snapshots",
         &token,
         serde_json::json!({ "source": "nonexistent", "name": "snap" }),
     );
@@ -750,7 +750,7 @@ async fn test_cleanup_skips_apt_metadata() {
     // Trigger metadata rebuild
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cleanup/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-cleanup/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -766,7 +766,7 @@ async fn test_cleanup_skips_apt_metadata() {
     .unwrap();
 
     // Metadata should still be accessible
-    let req = app.auth_request(Method::GET, "/apt/apt-cleanup/dists/stable/Release", &token);
+    let req = app.auth_request(Method::GET, "/repository/apt-cleanup/dists/stable/Release", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -799,7 +799,7 @@ async fn test_cache_multi_distro_independent() {
     // Verify the upstream serves its metadata at /dists/stable/...
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-upstream/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-upstream/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -817,7 +817,7 @@ async fn test_cache_multi_distro_independent() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-multi-cache/dists/noble/Release",
+        "/repository/apt-multi-cache/dists/noble/Release",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -865,7 +865,7 @@ SHA256:
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cache-rel/dists/stable/Release",
+        "/repository/apt-cache-rel/dists/stable/Release",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -930,7 +930,7 @@ SHA256: abc123
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cache-pkg/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-cache-pkg/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -944,7 +944,7 @@ SHA256: abc123
     // Second fetch should serve from cache without hitting upstream
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cache-pkg/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-cache-pkg/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -980,7 +980,7 @@ async fn test_cache_fetches_inrelease_from_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cache-inrel/dists/stable/InRelease",
+        "/repository/apt-cache-inrel/dists/stable/InRelease",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1039,7 +1039,7 @@ async fn test_cache_fetches_packages_gz_from_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cache-gz/dists/stable/main/binary-amd64/Packages.gz",
+        "/repository/apt-cache-gz/dists/stable/main/binary-amd64/Packages.gz",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1075,7 +1075,7 @@ async fn test_cache_downloads_deb_from_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cache-dl/pool/main/c/cache-dl/cache-dl_1.0_amd64.deb",
+        "/repository/apt-cache-dl/pool/main/c/cache-dl/cache-dl_1.0_amd64.deb",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1085,7 +1085,7 @@ async fn test_cache_downloads_deb_from_upstream() {
     // Second fetch should serve from local cache
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-cache-dl/pool/main/c/cache-dl/cache-dl_1.0_amd64.deb",
+        "/repository/apt-cache-dl/pool/main/c/cache-dl/cache-dl_1.0_amd64.deb",
         &token,
     );
     let (status, downloaded2) = app.call_raw(req).await;
@@ -1113,7 +1113,7 @@ async fn test_proxy_release_generation() {
     // Fetch Release through the proxy
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-proxy-rel/dists/stable/Release",
+        "/repository/apt-proxy-rel/dists/stable/Release",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1158,7 +1158,7 @@ async fn test_proxy_inrelease_generation() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-proxy-inrel/dists/stable/InRelease",
+        "/repository/apt-proxy-inrel/dists/stable/InRelease",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1186,7 +1186,7 @@ async fn test_proxy_release_gpg() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-proxy-gpg/dists/stable/Release.gpg",
+        "/repository/apt-proxy-gpg/dists/stable/Release.gpg",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -1209,7 +1209,7 @@ async fn test_proxy_packages_gz() {
     // Fetch Packages.gz through proxy
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-proxy-gz/dists/stable/main/binary-amd64/Packages.gz",
+        "/repository/apt-proxy-gz/dists/stable/main/binary-amd64/Packages.gz",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1256,7 +1256,7 @@ async fn test_proxy_multi_member_release_architectures() {
     // Proxy Release should list both architectures
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-proxy-ma/dists/stable/Release",
+        "/repository/apt-proxy-ma/dists/stable/Release",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1284,7 +1284,7 @@ async fn test_hosted_release_gpg() {
     // Fetch Release.gpg
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-hgpg/dists/stable/Release.gpg",
+        "/repository/apt-hgpg/dists/stable/Release.gpg",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -1315,7 +1315,7 @@ async fn test_snapshot_packages_gz() {
     // Trigger metadata rebuild
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap-gz/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-snap-gz/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -1324,7 +1324,7 @@ async fn test_snapshot_packages_gz() {
     // Create snapshot
     let req = app.json_request(
         Method::POST,
-        "/apt/apt-snap-gz/snapshots",
+        "/repository/apt-snap-gz/snapshots",
         &token,
         serde_json::json!({ "source": "stable", "name": "v1" }),
     );
@@ -1334,7 +1334,7 @@ async fn test_snapshot_packages_gz() {
     // Fetch Packages and Packages.gz from snapshot
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap-gz/dists/v1/main/binary-amd64/Packages",
+        "/repository/apt-snap-gz/dists/v1/main/binary-amd64/Packages",
         &token,
     );
     let (_, plain_body) = app.call_raw(req).await;
@@ -1343,7 +1343,7 @@ async fn test_snapshot_packages_gz() {
 
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap-gz/dists/v1/main/binary-amd64/Packages.gz",
+        "/repository/apt-snap-gz/dists/v1/main/binary-amd64/Packages.gz",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1386,7 +1386,7 @@ async fn test_snapshot_inrelease_and_gpg() {
     // Trigger metadata rebuild
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap-sig/dists/stable/main/binary-amd64/Packages",
+        "/repository/apt-snap-sig/dists/stable/main/binary-amd64/Packages",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -1395,7 +1395,7 @@ async fn test_snapshot_inrelease_and_gpg() {
     // Create snapshot
     let req = app.json_request(
         Method::POST,
-        "/apt/apt-snap-sig/snapshots",
+        "/repository/apt-snap-sig/snapshots",
         &token,
         serde_json::json!({ "source": "stable", "name": "sig-snap" }),
     );
@@ -1405,7 +1405,7 @@ async fn test_snapshot_inrelease_and_gpg() {
     // Fetch InRelease from snapshot
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap-sig/dists/sig-snap/InRelease",
+        "/repository/apt-snap-sig/dists/sig-snap/InRelease",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1419,7 +1419,7 @@ async fn test_snapshot_inrelease_and_gpg() {
     // Fetch Release.gpg from snapshot
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-snap-sig/dists/sig-snap/Release.gpg",
+        "/repository/apt-snap-sig/dists/sig-snap/Release.gpg",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -1465,7 +1465,7 @@ async fn test_multi_distribution_upload() {
     // Fetch Packages for "focal" — should contain hello but not world
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-multi-dist/dists/focal/main/binary-amd64/Packages",
+        "/repository/apt-multi-dist/dists/focal/main/binary-amd64/Packages",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1480,7 +1480,7 @@ async fn test_multi_distribution_upload() {
     // Fetch Packages for "jammy" — should contain world but not hello
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-multi-dist/dists/jammy/main/binary-amd64/Packages",
+        "/repository/apt-multi-dist/dists/jammy/main/binary-amd64/Packages",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1495,7 +1495,7 @@ async fn test_multi_distribution_upload() {
     // Both share the pool — download hello via the shared pool path
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-multi-dist/pool/main/h/hello/hello_1.0_amd64.deb",
+        "/repository/apt-multi-dist/pool/main/h/hello/hello_1.0_amd64.deb",
         &token,
     );
     let (status, _) = app.call(req).await;
@@ -1523,7 +1523,7 @@ async fn test_list_distributions() {
     // Trigger metadata build by fetching
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-list-dist/dists/focal/main/binary-amd64/Packages",
+        "/repository/apt-list-dist/dists/focal/main/binary-amd64/Packages",
         &token,
     );
     app.call(req).await;
@@ -1542,13 +1542,13 @@ async fn test_list_distributions() {
     // Trigger metadata build for jammy
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-list-dist/dists/jammy/main/binary-amd64/Packages",
+        "/repository/apt-list-dist/dists/jammy/main/binary-amd64/Packages",
         &token,
     );
     app.call(req).await;
 
     // List distributions
-    let req = app.auth_request(Method::GET, "/apt/apt-list-dist/distributions", &token);
+    let req = app.auth_request(Method::GET, "/repository/apt-list-dist/distributions", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let dists: Vec<String> = serde_json::from_slice(&body).unwrap();
@@ -1590,7 +1590,7 @@ async fn test_proxy_downloads_deb_from_cache_member() {
     // Download through proxy — should find it in the cache member's upstream.
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-grp/pool/main/g/grp-cached/grp-cached_1.0_amd64.deb",
+        "/repository/apt-grp/pool/main/g/grp-cached/grp-cached_1.0_amd64.deb",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1642,7 +1642,7 @@ SHA256:
     // Proxy should generate its own Release with the hosted member's packages.
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-meta-grp/dists/stable/Release",
+        "/repository/apt-meta-grp/dists/stable/Release",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1679,7 +1679,7 @@ async fn test_nexus_apt_component_upload() {
     // Download via pool path
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-nexus/pool/main/h/hello/hello_1.0_amd64.deb",
+        "/repository/apt-nexus/pool/main/h/hello/hello_1.0_amd64.deb",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1709,7 +1709,7 @@ async fn test_nexus_apt_component_upload_with_component() {
     // Download via pool path under contrib component
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-nexus2/pool/contrib/h/hello/hello_1.0_amd64.deb",
+        "/repository/apt-nexus2/pool/contrib/h/hello/hello_1.0_amd64.deb",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1757,7 +1757,7 @@ async fn test_metadata_visible_in_browse() {
     // Fetch InRelease to trigger metadata rebuild.
     let req = app.auth_request(
         Method::GET,
-        "/apt/apt-browse/dists/stable/InRelease",
+        "/repository/apt-browse/dists/stable/InRelease",
         &token,
     );
     let resp = app.call_resp(req).await;

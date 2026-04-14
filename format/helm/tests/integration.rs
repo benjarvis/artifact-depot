@@ -19,13 +19,13 @@ use depot_test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_repo_404() {
     let app = TestApp::new().await;
-    helpers::assert_nonexistent_repo_404(&app, "/helm/no-such-repo/index.yaml").await;
+    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/index.yaml").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_non_helm_format_rejected() {
     let app = TestApp::new().await;
-    helpers::assert_wrong_format_rejected(&app, "/helm/raw-repo/index.yaml").await;
+    helpers::assert_wrong_format_rejected(&app, "/repository/raw-repo/index.yaml").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -57,7 +57,7 @@ async fn test_upload_and_index() {
     assert_eq!(status, StatusCode::OK);
 
     // GET index.yaml
-    let req = app.auth_request(Method::GET, "/helm/helm-hosted/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-hosted/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let index = String::from_utf8(body).unwrap();
@@ -81,7 +81,7 @@ async fn test_upload_and_download() {
     assert_eq!(status, StatusCode::OK);
 
     // Download the chart
-    let req = app.auth_request(Method::GET, "/helm/helm-dl/charts/nginx-1.0.0.tgz", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-dl/charts/nginx-1.0.0.tgz", &token);
     let (status, downloaded) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, chart, "downloaded chart should match uploaded");
@@ -103,7 +103,7 @@ async fn test_multiple_versions() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/helm/helm-multi-ver/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-multi-ver/index.yaml", &token);
     let (_, body) = app.call_raw(req).await;
     let index = String::from_utf8(body).unwrap();
 
@@ -127,7 +127,7 @@ async fn test_multiple_charts() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/helm/helm-multi-chart/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-multi-chart/index.yaml", &token);
     let (_, body) = app.call_raw(req).await;
     let index = String::from_utf8(body).unwrap();
 
@@ -153,7 +153,7 @@ async fn test_overwrite_chart() {
     assert_eq!(status, StatusCode::OK);
 
     // Index should have only one entry for nginx 1.0.0
-    let req = app.auth_request(Method::GET, "/helm/helm-overwrite/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-overwrite/index.yaml", &token);
     let (_, body) = app.call_raw(req).await;
     let index = String::from_utf8(body).unwrap();
 
@@ -222,7 +222,7 @@ async fn test_download_nonexistent_chart() {
 
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-dl-404/charts/nonexistent-1.0.0.tgz",
+        "/repository/helm-dl-404/charts/nonexistent-1.0.0.tgz",
         &token,
     );
     let (status, _) = app.call(req).await;
@@ -253,7 +253,7 @@ async fn test_proxy_index_merges_members() {
     assert_eq!(status, StatusCode::OK);
 
     // GET proxy index.yaml
-    let req = app.auth_request(Method::GET, "/helm/helm-proxy/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-proxy/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let index = String::from_utf8(body).unwrap();
@@ -286,7 +286,7 @@ async fn test_proxy_download_searches_members() {
     // Download through proxy should find it in the second member
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-pd-proxy/charts/redis-1.0.0.tgz",
+        "/repository/helm-pd-proxy/charts/redis-1.0.0.tgz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -331,7 +331,7 @@ generated: \"2026-01-01T00:00:00Z\"
         .await;
     let token = app.admin_token();
 
-    let req = app.auth_request(Method::GET, "/helm/helm-cache-idx/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-cache-idx/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(body).unwrap();
@@ -341,7 +341,7 @@ generated: \"2026-01-01T00:00:00Z\"
     );
 
     // Second fetch should come from cache.
-    let req = app.auth_request(Method::GET, "/helm/helm-cache-idx/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-cache-idx/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(body).unwrap();
@@ -371,7 +371,7 @@ async fn test_cache_downloads_chart_from_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-cache-dl/charts/cached-chart-1.0.0.tgz",
+        "/repository/helm-cache-dl/charts/cached-chart-1.0.0.tgz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -381,7 +381,7 @@ async fn test_cache_downloads_chart_from_upstream() {
     // Second fetch should come from local cache.
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-cache-dl/charts/cached-chart-1.0.0.tgz",
+        "/repository/helm-cache-dl/charts/cached-chart-1.0.0.tgz",
         &token,
     );
     let (status, downloaded2) = app.call_raw(req).await;
@@ -409,7 +409,7 @@ async fn test_proxy_upload_routes_to_member() {
     // Verify the chart ended up in the hosted member.
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-write-target/charts/routed-1.0.0.tgz",
+        "/repository/helm-write-target/charts/routed-1.0.0.tgz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -433,7 +433,7 @@ async fn test_cache_index_upstream_unavailable() {
     let token = app.admin_token();
 
     // Should 404 since there's no cached index and upstream is down.
-    let req = app.auth_request(Method::GET, "/helm/helm-cache-fail/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-cache-fail/index.yaml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(
         status,
@@ -465,7 +465,7 @@ async fn test_proxy_index_merges_hosted_and_cache_members() {
     app.create_helm_proxy_repo("helm-prx", vec!["helm-prx-h", "helm-prx-c"])
         .await;
 
-    let req = app.auth_request(Method::GET, "/helm/helm-prx/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-prx/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(body.to_vec()).unwrap();
@@ -492,7 +492,7 @@ async fn test_hosted_download_chart() {
     assert_eq!(status, StatusCode::OK);
 
     // Download the chart back.
-    let req = app.auth_request(Method::GET, "/helm/helm-dl/charts/myapp-2.1.0.tgz", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-dl/charts/myapp-2.1.0.tgz", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
@@ -528,7 +528,7 @@ async fn test_multiple_versions_in_index() {
         assert_eq!(status, StatusCode::OK, "upload {version} failed");
     }
 
-    let req = app.auth_request(Method::GET, "/helm/helm-multi/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-multi/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(body.to_vec()).unwrap();
@@ -558,7 +558,7 @@ async fn test_proxy_download_from_member() {
     // Download through the proxy.
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-dl-p/charts/proxied-1.0.0.tgz",
+        "/repository/helm-dl-p/charts/proxied-1.0.0.tgz",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -582,7 +582,7 @@ async fn test_hosted_delete_triggers_index_rebuild() {
     assert_eq!(status, StatusCode::OK);
 
     // Index should contain the chart.
-    let req = app.auth_request(Method::GET, "/helm/helm-del/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-del/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&body).contains("delme"));
@@ -597,7 +597,7 @@ async fn test_hosted_delete_triggers_index_rebuild() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Index should no longer contain the chart.
-    let req = app.auth_request(Method::GET, "/helm/helm-del/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-del/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&body);
@@ -626,14 +626,14 @@ async fn test_proxy_caches_index() {
         .await;
 
     // First request — builds and caches merged index.
-    let req = app.auth_request(Method::GET, "/helm/helm-pc-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-pc-p/index.yaml", &token);
     let (status, body1) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text1 = String::from_utf8_lossy(&body1);
     assert!(text1.contains("cached"));
 
     // Second request — served from cache, should still contain the chart.
-    let req = app.auth_request(Method::GET, "/helm/helm-pc-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-pc-p/index.yaml", &token);
     let (status, body2) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text2 = String::from_utf8_lossy(&body2);
@@ -653,7 +653,7 @@ async fn test_proxy_stale_after_member_upload() {
     let token = app.admin_token();
 
     // Fetch proxy index — should be empty.
-    let req = app.auth_request(Method::GET, "/helm/helm-ps-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-ps-p/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!String::from_utf8_lossy(&body).contains("freshchart"));
@@ -665,7 +665,7 @@ async fn test_proxy_stale_after_member_upload() {
     assert_eq!(status, StatusCode::OK);
 
     // Proxy index should now contain the new chart.
-    let req = app.auth_request(Method::GET, "/helm/helm-ps-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-ps-p/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&body);
@@ -714,7 +714,7 @@ generated: \"2026-01-01T00:00:00Z\"
     let token = app.admin_token();
 
     // First proxy fetch — fetches from upstream, caches.
-    let req = app.auth_request(Method::GET, "/helm/helm-ttl-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-ttl-p/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&body).contains("oldchart"));
@@ -746,7 +746,7 @@ generated: \"2026-01-02T00:00:00Z\"
         .await;
 
     // Proxy fetch should detect expired TTL, re-fetch, and show new content.
-    let req = app.auth_request(Method::GET, "/helm/helm-ttl-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-ttl-p/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&body);
@@ -780,7 +780,7 @@ async fn test_proxy_nested_proxy_member() {
         .await;
 
     // Outer proxy index should contain the chart from the hosted grandchild.
-    let req = app.auth_request(Method::GET, "/helm/helm-np-outer/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-np-outer/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&body);
@@ -805,7 +805,7 @@ async fn test_propagation_transitive() {
     let token = app.admin_token();
 
     // Build initial outer proxy index (empty).
-    let req = app.auth_request(Method::GET, "/helm/helm-tp-outer/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-tp-outer/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!String::from_utf8_lossy(&body).contains("transitive"));
@@ -817,7 +817,7 @@ async fn test_propagation_transitive() {
     assert_eq!(status, StatusCode::OK);
 
     // Outer proxy should see the chart (stale flag propagated transitively).
-    let req = app.auth_request(Method::GET, "/helm/helm-tp-outer/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-tp-outer/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&body);
@@ -864,7 +864,7 @@ generated: \"2026-01-01T00:00:00Z\"
     let token = app.admin_token();
 
     // Seed proxy index.
-    let req = app.auth_request(Method::GET, "/helm/helm-cup-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-cup-p/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&body).contains("alpha"));
@@ -900,7 +900,7 @@ generated: \"2026-01-02T00:00:00Z\"
         .await;
 
     // Proxy should detect expired TTL, refresh cache, and show new chart.
-    let req = app.auth_request(Method::GET, "/helm/helm-cup-p/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-cup-p/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&body);

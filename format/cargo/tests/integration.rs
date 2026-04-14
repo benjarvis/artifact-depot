@@ -62,7 +62,7 @@ async fn publish_crate(app: &TestApp, repo: &str, name: &str, version: &str, dat
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri(format!("/cargo/{repo}/api/v1/crates/new"))
+        .uri(format!("/repository/{repo}/api/v1/crates/new"))
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(body))
@@ -78,17 +78,20 @@ async fn publish_crate(app: &TestApp, repo: &str, name: &str, version: &str, dat
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_repo_404() {
     let app = TestApp::new().await;
-    helpers::assert_nonexistent_repo_404(&app, "/cargo/no-such-repo/index/config.json").await;
+    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/index/config.json").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_non_cargo_repo_400() {
+    // Under the unified `/repository/{repo}/...` router, a cargo-shaped URL on
+    // a raw repo falls through to the generic artifact lookup and returns 404
+    // rather than 400 — URL shape is no longer tied to format.
     let app = TestApp::new().await;
     app.create_hosted_repo("raw-repo").await;
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/cargo/raw-repo/index/config.json", &token);
+    let req = app.auth_request(Method::GET, "/repository/raw-repo/index/config.json", &token);
     let (status, _) = app.call(req).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ===========================================================================
@@ -100,7 +103,7 @@ async fn test_config_json() {
     let app = TestApp::new().await;
     create_cargo_repo(&app, "cargo-test").await;
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/cargo/cargo-test/index/config.json", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-test/index/config.json", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["dl"].as_str().unwrap().contains("cargo-test"));
@@ -123,7 +126,7 @@ async fn test_publish_and_download() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-hosted/api/v1/crates/my-crate/1.0.0/download",
+        "/repository/cargo-hosted/api/v1/crates/my-crate/1.0.0/download",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -150,7 +153,7 @@ async fn test_sparse_index() {
 
     let token = app.admin_token();
     // serde -> prefix se/rd
-    let req = app.auth_request(Method::GET, "/cargo/cargo-idx/index/se/rd/serde", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-idx/index/se/rd/serde", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -169,7 +172,7 @@ async fn test_sparse_index_1char() {
     publish_crate(&app, "cargo-1ch", "a", "0.1.0", b"one-char-crate").await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/cargo/cargo-1ch/index/1/a", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-1ch/index/1/a", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -182,7 +185,7 @@ async fn test_sparse_index_2char() {
     publish_crate(&app, "cargo-2ch", "ab", "0.1.0", b"two-char-crate").await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/cargo/cargo-2ch/index/2/ab", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-2ch/index/2/ab", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -196,7 +199,7 @@ async fn test_sparse_index_3char() {
 
     let token = app.admin_token();
     // abc -> prefix 3/a
-    let req = app.auth_request(Method::GET, "/cargo/cargo-3ch/index/3/a/abc", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-3ch/index/3/a/abc", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -217,7 +220,7 @@ async fn test_yank_unyank() {
     // Yank
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
-        .uri("/cargo/cargo-yank/api/v1/crates/my-crate/1.0.0/yank")
+        .uri("/repository/cargo-yank/api/v1/crates/my-crate/1.0.0/yank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -228,7 +231,7 @@ async fn test_yank_unyank() {
     // Check index shows yanked=true
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-yank/index/my/cr/my-crate",
+        "/repository/cargo-yank/index/my/cr/my-crate",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -242,7 +245,7 @@ async fn test_yank_unyank() {
     // Unyank
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-yank/api/v1/crates/my-crate/1.0.0/unyank")
+        .uri("/repository/cargo-yank/api/v1/crates/my-crate/1.0.0/unyank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -253,7 +256,7 @@ async fn test_yank_unyank() {
     // Check index shows yanked=false
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-yank/index/my/cr/my-crate",
+        "/repository/cargo-yank/index/my/cr/my-crate",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -277,7 +280,7 @@ async fn test_publish_body_too_short() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-val/api/v1/crates/new")
+        .uri("/repository/cargo-val/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(vec![0u8; 2]))
         .unwrap();
@@ -302,7 +305,7 @@ async fn test_publish_invalid_json() {
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-badjson/api/v1/crates/new")
+        .uri("/repository/cargo-badjson/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
         .unwrap();
@@ -329,7 +332,7 @@ async fn test_search() {
     let token = app.admin_token();
 
     // Search all
-    let req = app.auth_request(Method::GET, "/cargo/cargo-search/api/v1/crates", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-search/api/v1/crates", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["meta"]["total"], 2);
@@ -337,7 +340,7 @@ async fn test_search() {
     // Search with query
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-search/api/v1/crates?q=tok",
+        "/repository/cargo-search/api/v1/crates?q=tok",
         &token,
     );
     let (status, body) = app.call(req).await;
@@ -361,7 +364,7 @@ async fn test_proxy_download() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-proxy/api/v1/crates/proxy-crate/0.1.0/download",
+        "/repository/cargo-proxy/api/v1/crates/proxy-crate/0.1.0/download",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -428,7 +431,7 @@ async fn test_publish_with_deps() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-deps/api/v1/crates/new")
+        .uri("/repository/cargo-deps/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(body))
@@ -437,7 +440,7 @@ async fn test_publish_with_deps() {
     assert_eq!(status, StatusCode::OK, "publish failed: {resp_body}");
 
     // Verify deps appear in the sparse index
-    let req = app.auth_request(Method::GET, "/cargo/cargo-deps/index/my/li/my-lib", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-deps/index/my/li/my-lib", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -485,7 +488,7 @@ async fn test_publish_through_proxy() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-prx-member/api/v1/crates/proxy-pub/1.0.0/download",
+        "/repository/cargo-prx-member/api/v1/crates/proxy-pub/1.0.0/download",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -505,7 +508,7 @@ async fn test_yank_through_proxy() {
     // Yank through the proxy
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
-        .uri("/cargo/cargo-yk-proxy/api/v1/crates/yk-crate/1.0.0/yank")
+        .uri("/repository/cargo-yk-proxy/api/v1/crates/yk-crate/1.0.0/yank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -516,7 +519,7 @@ async fn test_yank_through_proxy() {
     // Verify yanked in hosted member's index
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-yk-member/index/yk/cr/yk-crate",
+        "/repository/cargo-yk-member/index/yk/cr/yk-crate",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -548,7 +551,7 @@ async fn test_unyank_through_proxy() {
     // Yank first (directly on hosted)
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
-        .uri("/cargo/cargo-uyk-member/api/v1/crates/uyk-crate/1.0.0/yank")
+        .uri("/repository/cargo-uyk-member/api/v1/crates/uyk-crate/1.0.0/yank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -558,7 +561,7 @@ async fn test_unyank_through_proxy() {
     // Unyank through the proxy
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-uyk-proxy/api/v1/crates/uyk-crate/1.0.0/unyank")
+        .uri("/repository/cargo-uyk-proxy/api/v1/crates/uyk-crate/1.0.0/unyank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -569,7 +572,7 @@ async fn test_unyank_through_proxy() {
     // Verify unyank in hosted member's index
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-uyk-member/index/uy/kc/uyk-crate",
+        "/repository/cargo-uyk-member/index/uy/kc/uyk-crate",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -604,7 +607,7 @@ async fn test_proxy_index_entry() {
     // Fetch index through proxy (pidx-crate -> prefix pi/dx)
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-pidx-proxy/index/pi/dx/pidx-crate",
+        "/repository/cargo-pidx-proxy/index/pi/dx/pidx-crate",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -645,7 +648,7 @@ async fn test_publish_truncated_crate() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-trunc/api/v1/crates/new")
+        .uri("/repository/cargo-trunc/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(body))
@@ -666,7 +669,7 @@ async fn test_download_not_found() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-dl404/api/v1/crates/no-such-crate/1.0.0/download",
+        "/repository/cargo-dl404/api/v1/crates/no-such-crate/1.0.0/download",
         &token,
     );
     let (status, body) = app.call(req).await;
@@ -685,7 +688,7 @@ async fn test_yank_not_found() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
-        .uri("/cargo/cargo-ynf/api/v1/crates/no-such-crate/1.0.0/yank")
+        .uri("/repository/cargo-ynf/api/v1/crates/no-such-crate/1.0.0/yank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -730,7 +733,7 @@ async fn test_publish_to_cache_rejected() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-cache-pub/api/v1/crates/new")
+        .uri("/repository/cargo-cache-pub/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(body))
@@ -751,7 +754,7 @@ async fn test_yank_cache_rejected() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
-        .uri("/cargo/cargo-cache-yk/api/v1/crates/some-crate/1.0.0/yank")
+        .uri("/repository/cargo-cache-yk/api/v1/crates/some-crate/1.0.0/yank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -771,7 +774,7 @@ async fn test_unyank_cache_rejected() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-cache-uyk/api/v1/crates/some-crate/1.0.0/unyank")
+        .uri("/repository/cargo-cache-uyk/api/v1/crates/some-crate/1.0.0/unyank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -795,7 +798,7 @@ async fn test_unyank_not_found() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-uynf/api/v1/crates/no-such-crate/1.0.0/unyank")
+        .uri("/repository/cargo-uynf/api/v1/crates/no-such-crate/1.0.0/unyank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -816,7 +819,7 @@ async fn test_proxy_download_not_found() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-pdl-proxy/api/v1/crates/nonexistent/1.0.0/download",
+        "/repository/cargo-pdl-proxy/api/v1/crates/nonexistent/1.0.0/download",
         &token,
     );
     let (status, body) = app.call(req).await;
@@ -847,7 +850,7 @@ async fn test_proxy_no_write_member() {
     let token = app.admin_token();
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-nwm/api/v1/crates/new")
+        .uri("/repository/cargo-nwm/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(body))
@@ -869,7 +872,7 @@ async fn test_proxy_index_not_found() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-pinf-proxy/index/no/su/no-such-crate",
+        "/repository/cargo-pinf-proxy/index/no/su/no-such-crate",
         &token,
     );
     let (status, body) = app.call(req).await;
@@ -907,7 +910,7 @@ async fn test_write_requires_auth() {
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-auth/api/v1/crates/new")
+        .uri("/repository/cargo-auth/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {reader_token}"))
         .body(Body::from(body))
         .unwrap();
@@ -929,7 +932,7 @@ async fn test_index_entry_multiple_versions() {
     publish_crate(&app, "cargo-multi", "mypkg", "1.0.0", b"crate-v3").await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/cargo/cargo-multi/index/my/pk/mypkg", &token);
+    let req = app.auth_request(Method::GET, "/repository/cargo-multi/index/my/pk/mypkg", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(body.to_vec()).unwrap();
@@ -974,7 +977,7 @@ async fn test_publish_with_features_and_links() {
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-feat/api/v1/crates/new")
+        .uri("/repository/cargo-feat/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
         .unwrap();
@@ -984,7 +987,7 @@ async fn test_publish_with_features_and_links() {
     // Verify the index entry contains features, links, and rust_version.
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-feat/index/fe/at/feat-crate",
+        "/repository/cargo-feat/index/fe/at/feat-crate",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1022,7 +1025,7 @@ async fn test_proxy_publish_and_download() {
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/cargo/cargo-prx/api/v1/crates/new")
+        .uri("/repository/cargo-prx/api/v1/crates/new")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::from(body))
         .unwrap();
@@ -1032,7 +1035,7 @@ async fn test_proxy_publish_and_download() {
     // Download through the proxy.
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-prx/api/v1/crates/prx-crate/1.0.0/download",
+        "/repository/cargo-prx/api/v1/crates/prx-crate/1.0.0/download",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1042,7 +1045,7 @@ async fn test_proxy_publish_and_download() {
     // Verify index through proxy.
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-prx/index/pr/x-/prx-crate",
+        "/repository/cargo-prx/index/pr/x-/prx-crate",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1067,7 +1070,7 @@ async fn test_yank_blocks_download() {
     // Yank it.
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
-        .uri("/cargo/cargo-yank-dl/api/v1/crates/yankme/1.0.0/yank")
+        .uri("/repository/cargo-yank-dl/api/v1/crates/yankme/1.0.0/yank")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -1077,7 +1080,7 @@ async fn test_yank_blocks_download() {
     // Yanking is advisory in Cargo — downloads still work, but the index marks yanked=true.
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-yank-dl/api/v1/crates/yankme/1.0.0/download",
+        "/repository/cargo-yank-dl/api/v1/crates/yankme/1.0.0/download",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -1091,7 +1094,7 @@ async fn test_yank_blocks_download() {
     // Verify index shows yanked=true.
     let req = app.auth_request(
         Method::GET,
-        "/cargo/cargo-yank-dl/index/ya/nk/yankme",
+        "/repository/cargo-yank-dl/index/ya/nk/yankme",
         &token,
     );
     let (status, body) = app.call_raw(req).await;

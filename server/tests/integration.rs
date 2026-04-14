@@ -2384,7 +2384,7 @@ async fn test_npm_publish_and_packument() {
     let http = reqwest::Client::new();
     let token = get_auth_token(&_server.url).await;
     let resp = http
-        .get(format!("{}/npm/npm-int-hosted/hello-world", _server.url))
+        .get(format!("{}/repository/npm-int-hosted/hello-world", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2402,7 +2402,7 @@ async fn test_npm_publish_and_packument() {
         .as_str()
         .unwrap();
     assert!(
-        tarball_url.contains("/npm/npm-int-hosted/hello-world/-/"),
+        tarball_url.contains("/repository/npm-int-hosted/hello-world/-/"),
         "tarball URL should reference our server: {tarball_url}"
     );
     assert!(tarball_url.ends_with(".tgz"));
@@ -2425,7 +2425,7 @@ async fn test_npm_download_tarball() {
     let token = get_auth_token(&_server.url).await;
     let resp = http
         .get(format!(
-            "{}/npm/npm-int-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
+            "{}/repository/npm-int-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
             _server.url
         ))
         .bearer_auth(&token)
@@ -2461,7 +2461,7 @@ async fn test_npm_scoped_package() {
     let http = reqwest::Client::new();
     let token = get_auth_token(&_server.url).await;
     let resp = http
-        .get(format!("{}/npm/npm-int-scoped/@myorg/widget", _server.url))
+        .get(format!("{}/repository/npm-int-scoped/@myorg/widget", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2474,7 +2474,7 @@ async fn test_npm_scoped_package() {
     // Download scoped tarball
     let resp = http
         .get(format!(
-            "{}/npm/npm-int-scoped/@myorg/widget/-/widget-1.0.0.tgz",
+            "{}/repository/npm-int-scoped/@myorg/widget/-/widget-1.0.0.tgz",
             _server.url
         ))
         .bearer_auth(&token)
@@ -2511,7 +2511,7 @@ async fn test_npm_search() {
     // Search with text filter
     let resp = http
         .get(format!(
-            "{}/npm/npm-int-search/-/v1/search?text=alpha",
+            "{}/repository/npm-int-search/-/v1/search?text=alpha",
             _server.url
         ))
         .bearer_auth(&token)
@@ -2526,7 +2526,7 @@ async fn test_npm_search() {
 
     // Search with no text (returns all)
     let resp = http
-        .get(format!("{}/npm/npm-int-search/-/v1/search", _server.url))
+        .get(format!("{}/repository/npm-int-search/-/v1/search", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2576,7 +2576,7 @@ async fn test_npm_proxy_repo() {
     let http = reqwest::Client::new();
     let token = get_auth_token(&_server.url).await;
     let resp = http
-        .get(format!("{}/npm/npm-int-proxy/shared", _server.url))
+        .get(format!("{}/repository/npm-int-proxy/shared", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2589,7 +2589,7 @@ async fn test_npm_proxy_repo() {
     // Download tarball through proxy (from member A)
     let resp = http
         .get(format!(
-            "{}/npm/npm-int-proxy/shared/-/shared-1.0.0.tgz",
+            "{}/repository/npm-int-proxy/shared/-/shared-1.0.0.tgz",
             _server.url
         ))
         .bearer_auth(&token)
@@ -2625,7 +2625,7 @@ async fn test_npm_cache_repo_fetches_from_upstream() {
 
     // Create a cache repo pointing at the hosted repo as upstream,
     // with upstream_auth so the cache can authenticate to the upstream.
-    let upstream_url = format!("{}/npm/npm-upstream", _server.url);
+    let upstream_url = format!("{}/repository/npm-upstream", _server.url);
     let http = reqwest::Client::new();
     let token = get_auth_token(&_server.url).await;
     let resp = http
@@ -2654,7 +2654,7 @@ async fn test_npm_cache_repo_fetches_from_upstream() {
 
     // Fetch packument through cache — should fetch from upstream and cache it
     let resp = http
-        .get(format!("{}/npm/npm-cache/cached-pkg", _server.url))
+        .get(format!("{}/repository/npm-cache/cached-pkg", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2675,13 +2675,13 @@ async fn test_npm_cache_repo_fetches_from_upstream() {
         .as_str()
         .unwrap();
     assert!(
-        tarball_url.contains("/npm/npm-cache/"),
+        tarball_url.contains("/repository/npm-cache/"),
         "tarball URL should point through cache: {tarball_url}"
     );
 
     // Fetch scoped package through cache
     let resp = http
-        .get(format!("{}/npm/npm-cache/@org/lib", _server.url))
+        .get(format!("{}/repository/npm-cache/@org/lib", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2692,7 +2692,7 @@ async fn test_npm_cache_repo_fetches_from_upstream() {
 
     // Package not in upstream → 404 through cache
     let resp = http
-        .get(format!("{}/npm/npm-cache/nonexistent-pkg", _server.url))
+        .get(format!("{}/repository/npm-cache/nonexistent-pkg", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2723,7 +2723,7 @@ async fn test_npm_cache_tarball_download() {
         .unwrap();
 
     // Create cache pointing at upstream, with auth
-    let upstream_url = format!("{}/npm/npm-up-dl", _server.url);
+    let upstream_url = format!("{}/repository/npm-up-dl", _server.url);
     let http = reqwest::Client::new();
     let token = get_auth_token(&_server.url).await;
     let resp = http
@@ -2748,7 +2748,7 @@ async fn test_npm_cache_tarball_download() {
 
     // First, fetch packument to populate cache metadata
     let resp = http
-        .get(format!("{}/npm/npm-cache-dl/dl-test", _server.url))
+        .get(format!("{}/repository/npm-cache-dl/dl-test", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2810,7 +2810,7 @@ async fn test_npm_proxy_with_cache_member() {
         .unwrap();
 
     // Create a cache repo pointing at upstream, with auth
-    let upstream_url = format!("{}/npm/npm-prx-upstream", _server.url);
+    let upstream_url = format!("{}/repository/npm-prx-upstream", _server.url);
     let http2 = reqwest::Client::new();
     let token2 = get_auth_token(&_server.url).await;
     let resp = http2
@@ -2863,7 +2863,7 @@ async fn test_npm_proxy_with_cache_member() {
 
     // Fetch local-only package through proxy
     let resp = http
-        .get(format!("{}/npm/npm-prx-group/local-only", _server.url))
+        .get(format!("{}/repository/npm-prx-group/local-only", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2875,7 +2875,7 @@ async fn test_npm_proxy_with_cache_member() {
     // Download local package tarball through proxy
     let resp = http
         .get(format!(
-            "{}/npm/npm-prx-group/local-only/-/local-only-1.0.0.tgz",
+            "{}/repository/npm-prx-group/local-only/-/local-only-1.0.0.tgz",
             _server.url
         ))
         .bearer_auth(&token)
@@ -2897,7 +2897,7 @@ async fn test_npm_not_found_cases() {
 
     // Packument not found
     let resp = http
-        .get(format!("{}/npm/npm-int-nf/no-such-pkg", _server.url))
+        .get(format!("{}/repository/npm-int-nf/no-such-pkg", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2907,7 +2907,7 @@ async fn test_npm_not_found_cases() {
     // Tarball not found
     let resp = http
         .get(format!(
-            "{}/npm/npm-int-nf/no-such-pkg/-/no-such-pkg-1.0.0.tgz",
+            "{}/repository/npm-int-nf/no-such-pkg/-/no-such-pkg-1.0.0.tgz",
             _server.url
         ))
         .bearer_auth(&token)
@@ -2918,7 +2918,7 @@ async fn test_npm_not_found_cases() {
 
     // Nonexistent repo
     let resp = http
-        .get(format!("{}/npm/no-such-repo/some-pkg", _server.url))
+        .get(format!("{}/repository/no-such-repo/some-pkg", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2942,7 +2942,7 @@ async fn test_npm_demo_seeding() {
 
     // Check that packages were published
     let resp = http
-        .get(format!("{}/npm/npm-packages/-/v1/search", _server.url))
+        .get(format!("{}/repository/npm-packages/-/v1/search", _server.url))
         .bearer_auth(&token)
         .send()
         .await
@@ -2958,7 +2958,7 @@ async fn test_npm_demo_seeding() {
 
     // Verify a specific package has multiple versions
     let resp = http
-        .get(format!("{}/npm/npm-packages/hello-world", _server.url))
+        .get(format!("{}/repository/npm-packages/hello-world", _server.url))
         .bearer_auth(&token)
         .send()
         .await

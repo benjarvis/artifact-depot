@@ -55,7 +55,7 @@ pub fn pypi_upload_request(
 
     Request::builder()
         .method(Method::POST)
-        .uri(format!("/pypi/{}/", repo))
+        .uri(format!("/repository/{}/", repo))
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,

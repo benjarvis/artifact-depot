@@ -45,7 +45,7 @@ fn multipart_file_upload_request(
 /// Build a Helm chart upload multipart request.
 pub fn helm_upload_request(repo: &str, filename: &str, data: &[u8], token: &str) -> Request<Body> {
     multipart_file_upload_request(
-        &format!("/helm/{}/upload", repo),
+        &format!("/repository/{}/upload", repo),
         "chart",
         filename,
         data,

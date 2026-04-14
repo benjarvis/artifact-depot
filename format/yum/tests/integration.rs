@@ -22,13 +22,13 @@ use depot_test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_repo_404() {
     let app = TestApp::new().await;
-    helpers::assert_nonexistent_repo_404(&app, "/yum/no-such-repo/repodata/repomd.xml").await;
+    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/repodata/repomd.xml").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_non_yum_format_rejected() {
     let app = TestApp::new().await;
-    helpers::assert_wrong_format_rejected(&app, "/yum/raw-repo/repodata/repomd.xml").await;
+    helpers::assert_wrong_format_rejected(&app, "/repository/raw-repo/repodata/repomd.xml").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -60,7 +60,7 @@ async fn test_upload_and_repomd() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch repomd.xml
-    let req = app.auth_request(Method::GET, "/yum/yum-hosted/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-hosted/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -94,7 +94,7 @@ async fn test_upload_and_primary_xml() {
     assert_eq!(status, StatusCode::OK);
 
     // Get repomd.xml to find primary filename
-    let req = app.auth_request(Method::GET, "/yum/yum-primary/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-primary/repodata/repomd.xml", &token);
     let (_, repomd_body) = app.call_raw(req).await;
     let repomd = String::from_utf8(repomd_body).unwrap();
 
@@ -112,7 +112,7 @@ async fn test_upload_and_primary_xml() {
     // Fetch primary.xml.gz
     let req = app.auth_request(
         Method::GET,
-        &format!("/yum/yum-primary/repodata/{primary_href}"),
+        &format!("/repository/yum-primary/repodata/{primary_href}"),
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -148,7 +148,7 @@ async fn test_package_download() {
     assert_eq!(status, StatusCode::OK);
 
     // Download package (no directory → stored at root)
-    let req = app.auth_request(Method::GET, "/yum/yum-dl/hello-1.0-1.x86_64.rpm", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-dl/hello-1.0-1.x86_64.rpm", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let downloaded = resp.into_body().collect().await.unwrap().to_bytes();
@@ -177,7 +177,7 @@ async fn test_multiple_packages() {
     assert_eq!(status, StatusCode::OK);
 
     // Check repomd.xml references primary with both packages
-    let req = app.auth_request(Method::GET, "/yum/yum-multi/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-multi/repodata/repomd.xml", &token);
     let (_, repomd_body) = app.call_raw(req).await;
     let repomd = String::from_utf8(repomd_body).unwrap();
 
@@ -193,7 +193,7 @@ async fn test_multiple_packages() {
 
     let req = app.auth_request(
         Method::GET,
-        &format!("/yum/yum-multi/repodata/{primary_href}"),
+        &format!("/repository/yum-multi/repodata/{primary_href}"),
         &token,
     );
     let (_, gz_bytes) = app.call_raw(req).await;
@@ -235,14 +235,14 @@ async fn test_snapshot_create_and_access() {
     assert_eq!(status, StatusCode::OK);
 
     // Trigger metadata build by fetching repomd
-    let req = app.auth_request(Method::GET, "/yum/yum-snap/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-snap/repodata/repomd.xml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 
     // Create snapshot
     let req = app.json_request(
         Method::POST,
-        "/yum/yum-snap/snapshots",
+        "/repository/yum-snap/snapshots",
         &token,
         serde_json::json!({ "name": "v1" }),
     );
@@ -252,7 +252,7 @@ async fn test_snapshot_create_and_access() {
     // Access snapshot repomd.xml
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-snap/snapshots/v1/repodata/repomd.xml",
+        "/repository/yum-snap/snapshots/v1/repodata/repomd.xml",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -278,14 +278,14 @@ async fn test_snapshot_immutability() {
     assert_eq!(status, StatusCode::OK);
 
     // Trigger metadata build
-    let req = app.auth_request(Method::GET, "/yum/yum-immut/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-immut/repodata/repomd.xml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 
     // Create snapshot
     let req = app.json_request(
         Method::POST,
-        "/yum/yum-immut/snapshots",
+        "/repository/yum-immut/snapshots",
         &token,
         serde_json::json!({ "name": "v1" }),
     );
@@ -295,7 +295,7 @@ async fn test_snapshot_immutability() {
     // Get snapshot primary filename
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-immut/snapshots/v1/repodata/repomd.xml",
+        "/repository/yum-immut/snapshots/v1/repodata/repomd.xml",
         &token,
     );
     let (_, snap_repomd_bytes) = app.call_raw(req).await;
@@ -310,7 +310,7 @@ async fn test_snapshot_immutability() {
     // Snapshot should be unchanged
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-immut/snapshots/v1/repodata/repomd.xml",
+        "/repository/yum-immut/snapshots/v1/repodata/repomd.xml",
         &token,
     );
     let (_, snap_repomd_bytes2) = app.call_raw(req).await;
@@ -332,7 +332,7 @@ async fn test_snapshot_empty_repo_fails() {
     // Try to create snapshot of repo with no metadata
     let req = app.json_request(
         Method::POST,
-        "/yum/yum-empty/snapshots",
+        "/repository/yum-empty/snapshots",
         &token,
         serde_json::json!({ "name": "v1" }),
     );
@@ -359,7 +359,7 @@ async fn test_proxy_searches_members() {
     assert_eq!(status, StatusCode::OK);
 
     // Download via proxy (no directory → stored at root)
-    let req = app.auth_request(Method::GET, "/yum/yum-proxy/hello-1.0-1.x86_64.rpm", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-proxy/hello-1.0-1.x86_64.rpm", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let downloaded = resp.into_body().collect().await.unwrap().to_bytes();
@@ -381,7 +381,7 @@ async fn test_proxy_upload_routes_to_hosted() {
     assert_eq!(status, StatusCode::OK);
 
     // Verify it's in the hosted member (no directory → stored at root)
-    let req = app.auth_request(Method::GET, "/yum/yum-h2/hello-1.0-1.x86_64.rpm", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-h2/hello-1.0-1.x86_64.rpm", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -398,7 +398,7 @@ async fn test_public_key_not_found() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-nokey/repodata/repomd.xml.key",
+        "/repository/yum-nokey/repodata/repomd.xml.key",
         &token,
     );
     let (status, _) = app.call(req).await;
@@ -423,7 +423,7 @@ async fn test_replace_package_updates_metadata() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch metadata to build it
-    let req = app.auth_request(Method::GET, "/yum/yum-replace/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-replace/repodata/repomd.xml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -434,7 +434,7 @@ async fn test_replace_package_updates_metadata() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch updated metadata
-    let req = app.auth_request(Method::GET, "/yum/yum-replace/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-replace/repodata/repomd.xml", &token);
     let (_, repomd_body) = app.call_raw(req).await;
     let repomd = String::from_utf8(repomd_body).unwrap();
 
@@ -450,7 +450,7 @@ async fn test_replace_package_updates_metadata() {
 
     let req = app.auth_request(
         Method::GET,
-        &format!("/yum/yum-replace/repodata/{primary_href}"),
+        &format!("/repository/yum-replace/repodata/{primary_href}"),
         &token,
     );
     let (_, gz_bytes) = app.call_raw(req).await;
@@ -508,7 +508,7 @@ async fn test_cache_serves_upstream_repomd() {
         .await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/yum/yum-cache-up/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-cache-up/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -546,7 +546,7 @@ async fn test_cache_serves_cached_repomd_within_ttl() {
     // First fetch — hits upstream
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-ttl/repodata/repomd.xml",
+        "/repository/yum-cache-ttl/repodata/repomd.xml",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -555,7 +555,7 @@ async fn test_cache_serves_cached_repomd_within_ttl() {
     // Second fetch — should be served from cache (wiremock expect(1) verifies)
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-ttl/repodata/repomd.xml",
+        "/repository/yum-cache-ttl/repodata/repomd.xml",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -602,7 +602,7 @@ async fn test_cache_stale_fallback_on_upstream_failure() {
     // First fetch — seeds cache
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-stale/repodata/repomd.xml",
+        "/repository/yum-cache-stale/repodata/repomd.xml",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -611,7 +611,7 @@ async fn test_cache_stale_fallback_on_upstream_failure() {
     // Second fetch — upstream returns 500, should serve stale cache
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-stale/repodata/repomd.xml",
+        "/repository/yum-cache-stale/repodata/repomd.xml",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -671,7 +671,7 @@ async fn test_cache_serves_upstream_gz_file() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-gz/repodata/abc123-primary.xml.gz",
+        "/repository/yum-cache-gz/repodata/abc123-primary.xml.gz",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -713,7 +713,7 @@ async fn test_cache_download_package_from_upstream() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-dl/Packages/c/cached-pkg-1.0-1.x86_64.rpm",
+        "/repository/yum-cache-dl/Packages/c/cached-pkg-1.0-1.x86_64.rpm",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -724,7 +724,7 @@ async fn test_cache_download_package_from_upstream() {
     // Second fetch should serve from cache (upstream only called once)
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-dl/Packages/c/cached-pkg-1.0-1.x86_64.rpm",
+        "/repository/yum-cache-dl/Packages/c/cached-pkg-1.0-1.x86_64.rpm",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -754,7 +754,7 @@ async fn test_cache_download_package_not_found() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-404/Packages/m/missing-1.0-1.x86_64.rpm",
+        "/repository/yum-cache-404/Packages/m/missing-1.0-1.x86_64.rpm",
         &token,
     );
     let (status, _) = app.call(req).await;
@@ -780,7 +780,7 @@ async fn test_proxy_serves_member_metadata() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch repomd.xml through proxy
-    let req = app.auth_request(Method::GET, "/yum/yum-pmeta/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-pmeta/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -807,7 +807,7 @@ async fn test_proxy_serves_member_repodata_file() {
     assert_eq!(status, StatusCode::OK);
 
     // Trigger metadata build via proxy
-    let req = app.auth_request(Method::GET, "/yum/yum-prfp/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-prfp/repodata/repomd.xml", &token);
     let (_, repomd_body) = app.call_raw(req).await;
     let repomd = String::from_utf8(repomd_body).unwrap();
 
@@ -825,7 +825,7 @@ async fn test_proxy_serves_member_repodata_file() {
     // Fetch primary.xml.gz through proxy
     let req = app.auth_request(
         Method::GET,
-        &format!("/yum/yum-prfp/repodata/{primary_href}"),
+        &format!("/repository/yum-prfp/repodata/{primary_href}"),
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -853,7 +853,7 @@ async fn test_proxy_metadata_not_found_no_members() {
     let token = app.admin_token();
 
     // No packages uploaded — proxy generates empty but valid merged metadata.
-    let req = app.auth_request(Method::GET, "/yum/yum-pnf/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-pnf/repodata/repomd.xml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(body).unwrap();
@@ -893,7 +893,7 @@ async fn test_store_and_retrieve_signing_key() {
 
     // Retrieve public key via API
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/yum/yum-gpg/repodata/repomd.xml.key", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-gpg/repodata/repomd.xml.key", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -930,14 +930,14 @@ async fn test_signed_metadata_has_asc() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch repomd.xml (triggers rebuild with signing)
-    let req = app.auth_request(Method::GET, "/yum/yum-signed/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-signed/repodata/repomd.xml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 
     // Fetch repomd.xml.asc
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-signed/repodata/repomd.xml.asc",
+        "/repository/yum-signed/repodata/repomd.xml.asc",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -976,14 +976,14 @@ async fn test_snapshot_with_gpg_signing() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/yum/yum-snap-gpg/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-snap-gpg/repodata/repomd.xml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 
     // Create snapshot (should re-sign)
     let req = app.json_request(
         Method::POST,
-        "/yum/yum-snap-gpg/snapshots",
+        "/repository/yum-snap-gpg/snapshots",
         &token,
         json!({ "name": "signed-v1" }),
     );
@@ -993,7 +993,7 @@ async fn test_snapshot_with_gpg_signing() {
     // Check snapshot repomd.xml.asc exists
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-snap-gpg/snapshots/signed-v1/repodata/repomd.xml.asc",
+        "/repository/yum-snap-gpg/snapshots/signed-v1/repodata/repomd.xml.asc",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1024,7 +1024,7 @@ async fn test_snapshot_repodata_file_access() {
     // Build metadata
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-snap-file/repodata/repomd.xml",
+        "/repository/yum-snap-file/repodata/repomd.xml",
         &token,
     );
     let (_, repomd_body) = app.call_raw(req).await;
@@ -1044,7 +1044,7 @@ async fn test_snapshot_repodata_file_access() {
     // Create snapshot
     let req = app.json_request(
         Method::POST,
-        "/yum/yum-snap-file/snapshots",
+        "/repository/yum-snap-file/snapshots",
         &token,
         json!({ "name": "file-v1" }),
     );
@@ -1054,7 +1054,7 @@ async fn test_snapshot_repodata_file_access() {
     // Access primary.xml.gz through snapshot path
     let req = app.auth_request(
         Method::GET,
-        &format!("/yum/yum-snap-file/snapshots/file-v1/repodata/{primary_href}"),
+        &format!("/repository/yum-snap-file/snapshots/file-v1/repodata/{primary_href}"),
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1088,12 +1088,12 @@ async fn test_repomd_asc_unsigned() {
     assert_eq!(status, StatusCode::OK);
 
     // Trigger metadata build
-    let req = app.auth_request(Method::GET, "/yum/yum-asc/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-asc/repodata/repomd.xml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 
     // Fetch .asc — should exist but be empty (no signing key)
-    let req = app.auth_request(Method::GET, "/yum/yum-asc/repodata/repomd.xml.asc", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-asc/repodata/repomd.xml.asc", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -1138,7 +1138,7 @@ async fn test_cache_repomd_asc() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-cache-asc/repodata/repomd.xml.asc",
+        "/repository/yum-cache-asc/repodata/repomd.xml.asc",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1214,7 +1214,7 @@ async fn test_upload_missing_file_field() {
 
     let req = Request::builder()
         .method(Method::POST)
-        .uri("/yum/yum-nofile/upload")
+        .uri("/repository/yum-nofile/upload")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -1260,7 +1260,7 @@ async fn test_proxy_repomd_asc() {
     assert_eq!(status, StatusCode::OK);
 
     // Access .asc through proxy
-    let req = app.auth_request(Method::GET, "/yum/yum-pasc/repodata/repomd.xml.asc", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-pasc/repodata/repomd.xml.asc", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -1296,7 +1296,7 @@ async fn test_snapshot_rebuilds_stale_metadata() {
     // Create snapshot directly — should trigger rebuild internally.
     let req = app.json_request(
         Method::POST,
-        "/yum/yum-snap-stale/snapshots",
+        "/repository/yum-snap-stale/snapshots",
         &token,
         json!({ "name": "auto-rebuild" }),
     );
@@ -1306,7 +1306,7 @@ async fn test_snapshot_rebuilds_stale_metadata() {
     // Snapshot metadata should be available
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-snap-stale/snapshots/auto-rebuild/repodata/repomd.xml",
+        "/repository/yum-snap-stale/snapshots/auto-rebuild/repodata/repomd.xml",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1332,7 +1332,7 @@ async fn test_cache_metadata_not_found() {
         .await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/yum/yum-cache-nf/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-cache-nf/repodata/repomd.xml", &token);
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -1349,7 +1349,7 @@ async fn test_hosted_package_not_found() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-pkg-nf/Packages/n/noexist-1.0-1.x86_64.rpm",
+        "/repository/yum-pkg-nf/Packages/n/noexist-1.0-1.x86_64.rpm",
         &token,
     );
     let (status, _) = app.call(req).await;
@@ -1372,7 +1372,7 @@ async fn test_filelists_contains_file_entries() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch repomd.xml to find filelists filename
-    let req = app.auth_request(Method::GET, "/yum/yum-fl/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-fl/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let repomd = String::from_utf8(
@@ -1393,7 +1393,7 @@ async fn test_filelists_contains_file_entries() {
         .unwrap();
 
     // Fetch and decompress filelists
-    let url = format!("/yum/yum-fl/repodata/{}", fl_href);
+    let url = format!("/repository/yum-fl/repodata/{}", fl_href);
     let req = app.auth_request(Method::GET, &url, &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1420,7 +1420,7 @@ async fn test_other_contains_changelogs() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch repomd.xml to find other.xml filename
-    let req = app.auth_request(Method::GET, "/yum/yum-cl/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-cl/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     let repomd = String::from_utf8(
         resp.into_body()
@@ -1439,7 +1439,7 @@ async fn test_other_contains_changelogs() {
         .unwrap();
 
     // Fetch and decompress other.xml
-    let url = format!("/yum/yum-cl/repodata/{}", other_href);
+    let url = format!("/repository/yum-cl/repodata/{}", other_href);
     let req = app.auth_request(Method::GET, &url, &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1488,7 +1488,7 @@ async fn test_proxy_downloads_rpm_from_cache_member() {
     // Download through proxy — should find it via cache member's upstream.
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-grp/Packages/g/grp-cached-1.0-1.x86_64.rpm",
+        "/repository/yum-grp/Packages/g/grp-cached-1.0-1.x86_64.rpm",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1524,7 +1524,7 @@ async fn test_proxy_metadata_from_cache_member() {
     let token = app.admin_token();
 
     // Prime the cache member's metadata so it's locally available.
-    let req = app.auth_request(Method::GET, "/yum/yum-meta-c/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-meta-c/repodata/repomd.xml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -1533,7 +1533,7 @@ async fn test_proxy_metadata_from_cache_member() {
         .await;
 
     // Proxy generates merged metadata from all members.
-    let req = app.auth_request(Method::GET, "/yum/yum-meta-grp/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-meta-grp/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -1565,10 +1565,10 @@ async fn test_upload_with_directory() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Download via /yum/ catch-all
+    // Download via /repository/ catch-all
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-dir/7/x86_64/hello-1.0-1.x86_64.rpm",
+        "/repository/yum-dir/7/x86_64/hello-1.0-1.x86_64.rpm",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1588,7 +1588,7 @@ async fn test_upload_with_directory() {
     assert_eq!(downloaded.to_vec(), rpm);
 
     // Verify metadata location href
-    let req = app.auth_request(Method::GET, "/yum/yum-dir/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-dir/repodata/repomd.xml", &token);
     let (_, repomd_body) = app.call_raw(req).await;
     let repomd = String::from_utf8(repomd_body).unwrap();
     let primary_href = repomd
@@ -1602,7 +1602,7 @@ async fn test_upload_with_directory() {
         .unwrap();
     let req = app.auth_request(
         Method::GET,
-        &format!("/yum/yum-dir/repodata/{primary_href}"),
+        &format!("/repository/yum-dir/repodata/{primary_href}"),
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1632,7 +1632,7 @@ async fn test_upload_without_directory_stores_at_root() {
     assert_eq!(status, StatusCode::OK);
 
     // Download at root path (no directory prefix)
-    let req = app.auth_request(Method::GET, "/yum/yum-nodir/hello-1.0-1.x86_64.rpm", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-nodir/hello-1.0-1.x86_64.rpm", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let downloaded = resp.into_body().collect().await.unwrap().to_bytes();
@@ -1741,12 +1741,12 @@ async fn test_put_rpm_upload() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 
     // Verify repodata was generated
-    let req = app.auth_request(Method::GET, "/yum/yum-put/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-put/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Verify primary.xml has the package with correct location href
-    let req = app.auth_request(Method::GET, "/yum/yum-put/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-put/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let repomd = String::from_utf8(body.to_vec()).unwrap();
@@ -1759,7 +1759,7 @@ async fn test_put_rpm_upload() {
     // Download the package via the expected path
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-put/p1/7/x86_64/hello-1.0-1.x86_64.rpm",
+        "/repository/yum-put/p1/7/x86_64/hello-1.0-1.x86_64.rpm",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1809,7 +1809,7 @@ async fn test_repodata_depth_3() {
     // Repodata should be at the prefixed path, not root
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-depth3/p1/7/x86_64/repodata/repomd.xml",
+        "/repository/yum-depth3/p1/7/x86_64/repodata/repomd.xml",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1824,7 +1824,7 @@ async fn test_repodata_depth_3() {
     let prefixed_loc = format!("p1/7/x86_64/{primary_loc}");
     let req = app.auth_request(
         Method::GET,
-        &format!("/yum/yum-depth3/{prefixed_loc}"),
+        &format!("/repository/yum-depth3/{prefixed_loc}"),
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1841,7 +1841,7 @@ async fn test_repodata_depth_3() {
     );
 
     // Root repodata should NOT exist for depth=3 (only prefixed)
-    let req = app.auth_request(Method::GET, "/yum/yum-depth3/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-depth3/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
@@ -1859,7 +1859,7 @@ async fn test_repodata_depth_0_default() {
     assert_eq!(status, StatusCode::OK);
 
     // Root repodata should exist
-    let req = app.auth_request(Method::GET, "/yum/yum-depth0/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-depth0/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -1884,7 +1884,7 @@ async fn test_repodata_depth_change() {
     assert_eq!(status, StatusCode::OK);
 
     // Verify root repodata exists
-    let req = app.auth_request(Method::GET, "/yum/yum-dchange/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-dchange/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -1905,7 +1905,7 @@ async fn test_repodata_depth_change() {
     loop {
         let req = app.auth_request(
             Method::GET,
-            "/yum/yum-dchange/p1/7/x86_64/repodata/repomd.xml",
+            "/repository/yum-dchange/p1/7/x86_64/repodata/repomd.xml",
             &token,
         );
         let resp = app.call_resp(req).await;
@@ -1920,7 +1920,7 @@ async fn test_repodata_depth_change() {
     }
 
     // Old root repodata should be gone (deleted by depth change)
-    let req = app.auth_request(Method::GET, "/yum/yum-dchange/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-dchange/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
@@ -1939,7 +1939,7 @@ async fn test_repodata_depth_fewer_segments() {
     assert_eq!(status, StatusCode::OK);
 
     // Repodata should be at a/repodata/ (using all available segments)
-    let req = app.auth_request(Method::GET, "/yum/yum-fewer/a/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-fewer/a/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -1967,7 +1967,7 @@ async fn test_repodata_depth_multiple_prefixes() {
     // Both prefixes should have independent repodata
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-multi/p1/7/repodata/repomd.xml",
+        "/repository/yum-multi/p1/7/repodata/repomd.xml",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -1975,7 +1975,7 @@ async fn test_repodata_depth_multiple_prefixes() {
 
     let req = app.auth_request(
         Method::GET,
-        "/yum/yum-multi/p2/7/repodata/repomd.xml",
+        "/repository/yum-multi/p2/7/repodata/repomd.xml",
         &token,
     );
     let resp = app.call_resp(req).await;
@@ -2000,7 +2000,7 @@ async fn test_metadata_visible_in_browse() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch repomd.xml to trigger metadata rebuild.
-    let req = app.auth_request(Method::GET, "/yum/yum-browse/repodata/repomd.xml", &token);
+    let req = app.auth_request(Method::GET, "/repository/yum-browse/repodata/repomd.xml", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 

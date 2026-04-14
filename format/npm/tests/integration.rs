@@ -23,16 +23,19 @@ use depot_test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_repo_404() {
     let app = TestApp::new().await;
-    helpers::assert_nonexistent_repo_404(&app, "/npm/no-such-repo/some-pkg").await;
+    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/some-pkg").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_non_npm_repo_400() {
+    // Under the unified `/repository/{repo}/...` router, an npm-shaped URL on
+    // a raw repo falls through to the generic artifact lookup and returns 404
+    // rather than 400 — URL shape is no longer tied to format.
     let app = TestApp::new().await;
     app.create_hosted_repo("raw-repo").await;
-    let req = app.auth_request(Method::GET, "/npm/raw-repo/some-pkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/raw-repo/some-pkg", &app.admin_token());
     let (status, _) = app.call(req).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -43,7 +46,7 @@ async fn test_publish_invalid_json_body_400() {
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/npm/npm-badjson/some-pkg")
+        .uri("/repository/npm-badjson/some-pkg")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(b"this is not json".to_vec()))
@@ -67,7 +70,7 @@ async fn test_publish_missing_versions_field_400() {
             }
         }
     });
-    let req = app.json_request(Method::PUT, "/npm/npm-nover/my-pkg", &token, body);
+    let req = app.json_request(Method::PUT, "/repository/npm-nover/my-pkg", &token, body);
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -87,7 +90,7 @@ async fn test_publish_missing_attachments_field_400() {
             }
         }
     });
-    let req = app.json_request(Method::PUT, "/npm/npm-noatt/my-pkg", &token, body);
+    let req = app.json_request(Method::PUT, "/repository/npm-noatt/my-pkg", &token, body);
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -112,7 +115,7 @@ async fn test_publish_missing_attachment_data_field_400() {
             }
         }
     });
-    let req = app.json_request(Method::PUT, "/npm/npm-nodata/my-pkg", &token, body);
+    let req = app.json_request(Method::PUT, "/repository/npm-nodata/my-pkg", &token, body);
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -138,7 +141,7 @@ async fn test_publish_invalid_base64_attachment_400() {
             }
         }
     });
-    let req = app.json_request(Method::PUT, "/npm/npm-badb64/my-pkg", &token, body);
+    let req = app.json_request(Method::PUT, "/repository/npm-badb64/my-pkg", &token, body);
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -153,7 +156,7 @@ async fn test_publish_to_cache_repo_400() {
     let body = build_npm_publish_body("my-pkg", "1.0.0", b"tarball-data");
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/npm/npm-cache-nopub/my-pkg")
+        .uri("/repository/npm-cache-nopub/my-pkg")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -170,7 +173,7 @@ async fn test_invalid_tarball_filename_no_tgz_400() {
     // Request a tarball whose filename does not end in .tgz
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-badfile/some-pkg/-/some-pkg-1.0.0.tar.gz",
+        "/repository/npm-badfile/some-pkg/-/some-pkg-1.0.0.tar.gz",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -189,7 +192,7 @@ async fn test_rbac_readonly_user_cannot_publish() {
     let body = build_npm_publish_body("my-pkg", "1.0.0", b"data");
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/npm/npm-rbac/my-pkg")
+        .uri("/repository/npm-rbac/my-pkg")
         .header(header::AUTHORIZATION, format!("Bearer {}", reader_token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -213,7 +216,7 @@ async fn test_publish_and_get_packument() {
     assert_eq!(status, StatusCode::OK);
 
     // Get packument
-    let req = app.auth_request(Method::GET, "/npm/npm-hosted/my-pkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-hosted/my-pkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -228,7 +231,7 @@ async fn test_publish_and_get_packument() {
         .as_str()
         .unwrap();
     assert!(
-        tarball_url.contains("/npm/npm-hosted/"),
+        tarball_url.contains("/repository/npm-hosted/"),
         "tarball URL should point to our server: {tarball_url}"
     );
     assert!(
@@ -250,7 +253,7 @@ async fn test_publish_and_download_tarball() {
     // Download tarball
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-dl/my-pkg/-/my-pkg-1.0.0.tgz",
+        "/repository/npm-dl/my-pkg/-/my-pkg-1.0.0.tgz",
         &app.admin_token(),
     );
     let (status, data) = app.call_raw(req).await;
@@ -270,7 +273,7 @@ async fn test_download_tarball_headers() {
 
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-headers/hdr-pkg/-/hdr-pkg-1.0.0.tgz",
+        "/repository/npm-headers/hdr-pkg/-/hdr-pkg-1.0.0.tgz",
         &app.admin_token(),
     );
     let resp = app.call_resp(req).await;
@@ -325,7 +328,7 @@ async fn test_scoped_package_publish_get_download() {
     let body = build_npm_publish_body("@myorg/widget", "2.0.0", tarball);
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/npm/npm-scoped/@myorg/widget")
+        .uri("/repository/npm-scoped/@myorg/widget")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -334,7 +337,7 @@ async fn test_scoped_package_publish_get_download() {
     assert_eq!(status, StatusCode::OK);
 
     // Get packument (scoped)
-    let req = app.auth_request(Method::GET, "/npm/npm-scoped/@myorg/widget", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-scoped/@myorg/widget", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["name"], "@myorg/widget");
@@ -345,7 +348,7 @@ async fn test_scoped_package_publish_get_download() {
         .as_str()
         .unwrap();
     assert!(
-        tarball_url.contains("/npm/npm-scoped/@myorg/widget/-/"),
+        tarball_url.contains("/repository/npm-scoped/@myorg/widget/-/"),
         "scoped tarball URL should include scope: {tarball_url}"
     );
     assert!(
@@ -356,7 +359,7 @@ async fn test_scoped_package_publish_get_download() {
     // Download tarball (scoped) -- filename uses bare name without scope
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-scoped/@myorg/widget/-/widget-2.0.0.tgz",
+        "/repository/npm-scoped/@myorg/widget/-/widget-2.0.0.tgz",
         &token,
     );
     let (status, data) = app.call_raw(req).await;
@@ -380,7 +383,7 @@ async fn test_multiple_versions() {
     assert_eq!(status, StatusCode::OK);
 
     // Get packument -- should have both versions, dist-tags updated to v2
-    let req = app.auth_request(Method::GET, "/npm/npm-multi/multi-pkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-multi/multi-pkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["dist-tags"]["latest"], "2.0.0");
@@ -406,7 +409,7 @@ async fn test_overwrite_existing_version() {
     // Download -- should get new content
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-overwrite/ow-pkg/-/ow-pkg-1.0.0.tgz",
+        "/repository/npm-overwrite/ow-pkg/-/ow-pkg-1.0.0.tgz",
         &app.admin_token(),
     );
     let (status, data) = app.call_raw(req).await;
@@ -423,7 +426,7 @@ async fn test_packument_includes_time_field() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/npm/npm-time/time-pkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-time/time-pkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -450,15 +453,15 @@ async fn test_packument_tarball_url_format_unscoped() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/npm/npm-url/url-pkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-url/url-pkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
     let tarball_url = body["versions"]["3.0.0"]["dist"]["tarball"]
         .as_str()
         .unwrap();
-    // Unscoped: /npm/{repo}/{name}/-/{name}-{version}.tgz
-    assert_eq!(tarball_url, "/npm/npm-url/url-pkg/-/url-pkg-3.0.0.tgz");
+    // Unscoped: /repository/{repo}/{name}/-/{name}-{version}.tgz
+    assert_eq!(tarball_url, "/repository/npm-url/url-pkg/-/url-pkg-3.0.0.tgz");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -470,7 +473,7 @@ async fn test_packument_tarball_url_format_scoped() {
     let body = build_npm_publish_body("@scope/mypkg", "1.2.3", b"data");
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/npm/npm-url-s/@scope/mypkg")
+        .uri("/repository/npm-url-s/@scope/mypkg")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -478,15 +481,15 @@ async fn test_packument_tarball_url_format_scoped() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/npm/npm-url-s/@scope/mypkg", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-url-s/@scope/mypkg", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
     let tarball_url = body["versions"]["1.2.3"]["dist"]["tarball"]
         .as_str()
         .unwrap();
-    // Scoped: /npm/{repo}/@scope/pkg/-/{bare_name}-{version}.tgz
-    assert_eq!(tarball_url, "/npm/npm-url-s/@scope/mypkg/-/mypkg-1.2.3.tgz");
+    // Scoped: /repository/{repo}/@scope/pkg/-/{bare_name}-{version}.tgz
+    assert_eq!(tarball_url, "/repository/npm-url-s/@scope/mypkg/-/mypkg-1.2.3.tgz");
 }
 
 // ===========================================================================
@@ -509,7 +512,7 @@ async fn test_search_no_text_lists_all() {
     // Search with no text -- should return all packages
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-search-all/-/v1/search",
+        "/repository/npm-search-all/-/v1/search",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -534,7 +537,7 @@ async fn test_search_with_text_filter() {
     // Search for "alpha"
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-search-filt/-/v1/search?text=alpha",
+        "/repository/npm-search-filt/-/v1/search?text=alpha",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -564,7 +567,7 @@ async fn test_search_with_size_limit() {
     // Search with size=2
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-search-lim/-/v1/search?size=2",
+        "/repository/npm-search-lim/-/v1/search?size=2",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -580,7 +583,7 @@ async fn test_packument_not_found() {
 
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-empty/nonexistent",
+        "/repository/npm-empty/nonexistent",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -594,7 +597,7 @@ async fn test_tarball_not_found() {
 
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-notarball/some-pkg/-/some-pkg-1.0.0.tgz",
+        "/repository/npm-notarball/some-pkg/-/some-pkg-1.0.0.tgz",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -624,7 +627,7 @@ async fn test_proxy_repo_aggregates_packuments() {
     assert_eq!(status, StatusCode::OK);
 
     // Query through proxy -- should see both versions
-    let req = app.auth_request(Method::GET, "/npm/npm-proxy/shared-pkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-proxy/shared-pkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["versions"]["1.0.0"].is_object());
@@ -651,7 +654,7 @@ async fn test_proxy_first_member_wins_on_version_conflict() {
     // Query through proxy -- first member (npm-c1) wins
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-proxy-conflict/conflict-pkg",
+        "/repository/npm-proxy-conflict/conflict-pkg",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -678,7 +681,7 @@ async fn test_proxy_download_from_first_member_that_has_it() {
     // Download through proxy -- should find it in member B
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-proxy-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
+        "/repository/npm-proxy-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
         &app.admin_token(),
     );
     let (status, data) = app.call_raw(req).await;
@@ -708,7 +711,7 @@ async fn test_proxy_publish_routes_to_first_hosted_member() {
     // Verify it landed in the first hosted member (npm-pw-a)
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-pw-a/proxy-pub-pkg",
+        "/repository/npm-pw-a/proxy-pub-pkg",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -719,7 +722,7 @@ async fn test_proxy_publish_routes_to_first_hosted_member() {
     // Verify it is NOT in the second member
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-pw-b/proxy-pub-pkg",
+        "/repository/npm-pw-b/proxy-pub-pkg",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -736,7 +739,7 @@ async fn test_proxy_with_no_matching_package_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-proxy-empty/nonexistent",
+        "/repository/npm-proxy-empty/nonexistent",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -763,7 +766,7 @@ async fn test_proxy_tarball_download_across_members() {
     // Download pkg-a through proxy (found in member A)
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-proxy-tar/pkg-a/-/pkg-a-1.0.0.tgz",
+        "/repository/npm-proxy-tar/pkg-a/-/pkg-a-1.0.0.tgz",
         &app.admin_token(),
     );
     let (status, data) = app.call_raw(req).await;
@@ -773,7 +776,7 @@ async fn test_proxy_tarball_download_across_members() {
     // Download pkg-b through proxy (found in member B)
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-proxy-tar/pkg-b/-/pkg-b-1.0.0.tgz",
+        "/repository/npm-proxy-tar/pkg-b/-/pkg-b-1.0.0.tgz",
         &app.admin_token(),
     );
     let (status, data) = app.call_raw(req).await;
@@ -783,7 +786,7 @@ async fn test_proxy_tarball_download_across_members() {
     // Nonexistent tarball through proxy -> 404
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-proxy-tar/no-pkg/-/no-pkg-1.0.0.tgz",
+        "/repository/npm-proxy-tar/no-pkg/-/no-pkg-1.0.0.tgz",
         &app.admin_token(),
     );
     let (status, _) = app.call_raw(req).await;
@@ -805,7 +808,7 @@ async fn test_name_case_insensitive() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch with original case -- should work
-    let req = app.auth_request(Method::GET, "/npm/npm-case/MyPkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-case/MyPkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(
         status,
@@ -815,7 +818,7 @@ async fn test_name_case_insensitive() {
     assert!(body["versions"]["1.0.0"].is_object());
 
     // Fetch with lowercase -- should also find it because names are normalized
-    let req = app.auth_request(Method::GET, "/npm/npm-case/mypkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-case/mypkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(
         status,
@@ -1017,7 +1020,7 @@ async fn test_packument_has_dist_shasum_and_integrity() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/npm/npm-hashes/hash-pkg", &app.admin_token());
+    let req = app.auth_request(Method::GET, "/repository/npm-hashes/hash-pkg", &app.admin_token());
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -1081,12 +1084,12 @@ async fn test_publish_without_dist_tags_creates_latest() {
             }
         }
     });
-    let req = app.json_request(Method::PUT, "/npm/npm-notags/notags-pkg", &token, body);
+    let req = app.json_request(Method::PUT, "/repository/npm-notags/notags-pkg", &token, body);
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
     // Fetch packument and verify "latest" dist-tag was auto-created
-    let req = app.auth_request(Method::GET, "/npm/npm-notags/notags-pkg", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-notags/notags-pkg", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -1098,9 +1101,10 @@ async fn test_publish_without_dist_tags_creates_latest() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_whoami_endpoint() {
     let app = TestApp::new().await;
+    app.create_npm_repo("npm-whoami").await;
     let token = app.admin_token();
 
-    let req = app.auth_request(Method::GET, "/-/whoami", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-whoami/-/whoami", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["username"], "admin");
@@ -1109,6 +1113,7 @@ async fn test_whoami_endpoint() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_npm_login_endpoint() {
     let app = TestApp::new().await;
+    app.create_npm_repo("npm-login").await;
 
     let login_body = json!({
         "name": "admin",
@@ -1116,7 +1121,7 @@ async fn test_npm_login_endpoint() {
     });
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/-/user/org.couchdb.user:admin")
+        .uri("/repository/npm-login/-/user/org.couchdb.user:admin")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(&login_body).unwrap()))
         .unwrap();
@@ -1136,6 +1141,7 @@ async fn test_npm_login_endpoint() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_npm_login_bad_credentials() {
     let app = TestApp::new().await;
+    app.create_npm_repo("npm-login-bad").await;
 
     let login_body = json!({
         "name": "admin",
@@ -1143,7 +1149,7 @@ async fn test_npm_login_bad_credentials() {
     });
     let req = axum::http::Request::builder()
         .method(Method::PUT)
-        .uri("/-/user/org.couchdb.user:admin")
+        .uri("/repository/npm-login-bad/-/user/org.couchdb.user:admin")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(&login_body).unwrap()))
         .unwrap();
@@ -1162,7 +1168,7 @@ async fn test_search_returns_real_version() {
 
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-search-ver/-/v1/search?text=real-ver",
+        "/repository/npm-search-ver/-/v1/search?text=real-ver",
         &app.admin_token(),
     );
     let (status, body) = app.call(req).await;
@@ -1248,7 +1254,7 @@ async fn test_cache_packument_from_upstream() {
         .await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/npm/npm-cache/cached-pkg", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-cache/cached-pkg", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["name"], "cached-pkg");
@@ -1257,7 +1263,7 @@ async fn test_cache_packument_from_upstream() {
         .as_str()
         .unwrap();
     assert!(
-        tarball_url.contains("/npm/npm-cache/"),
+        tarball_url.contains("/repository/npm-cache/"),
         "tarball URL should be rewritten: {tarball_url}"
     );
 }
@@ -1290,7 +1296,7 @@ async fn test_cache_download_tarball_from_upstream() {
     let token = app.admin_token();
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-cache-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
+        "/repository/npm-cache-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1300,7 +1306,7 @@ async fn test_cache_download_tarball_from_upstream() {
     // Second request should serve from cache (upstream not called again).
     let req = app.auth_request(
         Method::GET,
-        "/npm/npm-cache-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
+        "/repository/npm-cache-dl/dl-pkg/-/dl-pkg-1.0.0.tgz",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1327,7 +1333,7 @@ async fn test_cache_packument_not_found() {
         .await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/npm/npm-cache-miss/no-such-pkg", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-cache-miss/no-such-pkg", &token);
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -1375,12 +1381,12 @@ async fn test_proxy_with_hosted_and_cache_members() {
     let token = app.admin_token();
 
     // Prime the cache by fetching from the cache repo directly.
-    let req = app.auth_request(Method::GET, "/npm/npm-prx-c/from-cache", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-prx-c/from-cache", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK, "cache prime: {body}");
 
     // Now the proxy should find it from the cache member's local store.
-    let req = app.auth_request(Method::GET, "/npm/npm-prx/from-cache", &token);
+    let req = app.auth_request(Method::GET, "/repository/npm-prx/from-cache", &token);
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["name"], "from-cache");

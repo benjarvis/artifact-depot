@@ -410,7 +410,7 @@ impl DepotClient {
             );
         let resp = self
             .http
-            .post(format!("{}/apt/{}/upload", self.base_url, repo))
+            .post(format!("{}/repository/{}/upload", self.base_url, repo))
             .bearer_auth(&token)
             .multipart(form)
             .send()
@@ -448,7 +448,7 @@ impl DepotClient {
         }
         let resp = self
             .http
-            .post(format!("{}/yum/{}/upload", self.base_url, repo))
+            .post(format!("{}/repository/{}/upload", self.base_url, repo))
             .bearer_auth(&token)
             .multipart(form)
             .send()
@@ -471,7 +471,7 @@ impl DepotClient {
         let token = self.bearer_token().await?;
         let resp = self
             .http
-            .get(format!("{}/apt/{}/{}", self.base_url, repo, path))
+            .get(format!("{}/repository/{}/{}", self.base_url, repo, path))
             .bearer_auth(&token)
             .send()
             .await?;
@@ -512,7 +512,7 @@ impl DepotClient {
             );
         let resp = self
             .http
-            .post(format!("{}/golang/{}/upload", self.base_url, repo))
+            .post(format!("{}/repository/{}/upload", self.base_url, repo))
             .bearer_auth(&token)
             .multipart(form)
             .send()
@@ -535,7 +535,7 @@ impl DepotClient {
         let token = self.bearer_token().await?;
         let resp = self
             .http
-            .get(format!("{}/golang/{}/{}", self.base_url, repo, path))
+            .get(format!("{}/repository/{}/{}", self.base_url, repo, path))
             .bearer_auth(&token)
             .send()
             .await?;
@@ -557,7 +557,7 @@ impl DepotClient {
         );
         let resp = self
             .http
-            .post(format!("{}/helm/{}/upload", self.base_url, repo))
+            .post(format!("{}/repository/{}/upload", self.base_url, repo))
             .bearer_auth(&token)
             .multipart(form)
             .send()
@@ -581,7 +581,7 @@ impl DepotClient {
         let resp = self
             .http
             .get(format!(
-                "{}/helm/{}/charts/{}",
+                "{}/repository/{}/charts/{}",
                 self.base_url, repo, filename
             ))
             .bearer_auth(&token)
@@ -608,7 +608,7 @@ impl DepotClient {
         let resp = self
             .http
             .put(format!(
-                "{}/cargo/{}/api/v1/crates/new",
+                "{}/repository/{}/api/v1/crates/new",
                 self.base_url, repo
             ))
             .bearer_auth(&token)
@@ -699,7 +699,7 @@ impl DepotClient {
             }
         });
 
-        let url = format!("{}/npm/{}/{}", self.base_url, repo, name);
+        let url = format!("{}/repository/{}/{}", self.base_url, repo, name);
         let resp = self
             .http
             .put(&url)

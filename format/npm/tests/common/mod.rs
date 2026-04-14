@@ -52,7 +52,7 @@ pub fn npm_publish_request(
 ) -> Request<Body> {
     let token = app.admin_token();
     let body = build_npm_publish_body(name, version, tarball_data);
-    let path = format!("/npm/{}/{}", repo, name);
+    let path = format!("/repository/{}/{}", repo, name);
     Request::builder()
         .method(Method::PUT)
         .uri(&path)

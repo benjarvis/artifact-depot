@@ -5,17 +5,14 @@
 //! YUM HTTP API implementation.
 //!
 //! Handles RPM upload, metadata serving (with on-demand rebuild),
-//! package downloads, snapshot creation, and public key serving
-//! for hosted, cache, and proxy repos.
+//! snapshot creation, and public key serving for hosted, cache,
+//! and proxy repos.
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    Extension,
 };
-use tokio_util::io::ReaderStream;
 
 use sha2::Digest;
 
@@ -23,7 +20,6 @@ use depot_core::api_helpers;
 use depot_core::auth::AuthenticatedUser;
 use depot_core::error::DepotError;
 use depot_core::format_state::FormatState;
-use depot_core::repo::proxy::MAX_PROXY_DEPTH;
 use depot_core::service;
 use depot_core::store::kv::{ArtifactFormat, RepoConfig, RepoKind, RepoType};
 
@@ -44,18 +40,59 @@ fn yum_store_from_config<'a>(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct CreateSnapshotRequest {
+    pub name: String,
+}
+
 // =============================================================================
-// POST /yum/{repo}/upload — upload RPM
+// /repository/{repo}/... dispatch for Yum repos (writes)
 // =============================================================================
 
-pub async fn upload(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-    mut multipart: Multipart,
-) -> Result<Response, DepotError> {
-    let (_target_repo, target_config, blobs) =
-        api_helpers::upload_preamble(&state, &user.0, &repo_name, ArtifactFormat::Yum).await?;
+/// Handle a write request under `/repository/{repo}/<path>` for a Yum repo.
+/// Returns `None` if the (method, path) combination is not a Yum write.
+pub async fn try_handle_repository_write(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Option<Response> {
+    if method == Method::POST && path == "upload" {
+        return Some(handle_upload(state, user, config, method, headers, body).await);
+    }
+    if method == Method::POST && path == "snapshots" {
+        return Some(handle_create_snapshot(state, config, body).await);
+    }
+    None
+}
+
+async fn handle_upload(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    headers: &HeaderMap,
+    body: Body,
+) -> Response {
+    let (_target_repo, target_config, blobs) = match api_helpers::upload_preamble(
+        state,
+        &user.0,
+        &config.name,
+        ArtifactFormat::Yum,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let mut multipart = match api_helpers::multipart_from_body(method, headers, body).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
 
     let mut blob_info: Option<(String, String, String, String, u64)> = None; // (filename, blob_id, blake3, sha256, size)
     let mut directory = String::new();
@@ -64,10 +101,14 @@ pub async fn upload(
         let field_name = field.name().unwrap_or("").to_string();
         match field_name.as_str() {
             "file" => {
-                let r =
-                    api_helpers::stream_multipart_field_to_blob(&mut field, blobs.as_ref()).await?;
-                let filename = r.filename.unwrap_or_else(|| "package.rpm".to_string());
-                blob_info = Some((filename, r.blob_id, r.blake3, r.sha256, r.size));
+                match api_helpers::stream_multipart_field_to_blob(&mut field, blobs.as_ref()).await
+                {
+                    Ok(r) => {
+                        let filename = r.filename.unwrap_or_else(|| "package.rpm".to_string());
+                        blob_info = Some((filename, r.blob_id, r.blake3, r.sha256, r.size));
+                    }
+                    Err(e) => return e.into_response(),
+                }
             }
             "directory" => {
                 directory = field.text().await.unwrap_or_default();
@@ -80,10 +121,10 @@ pub async fn upload(
 
     let (filename, blob_id, blake3, sha256, size) = match blob_info {
         Some(info) => info,
-        None => return Err(DepotError::BadRequest("missing 'file' field".into())),
+        None => return DepotError::BadRequest("missing 'file' field".into()).into_response(),
     };
 
-    let store = yum_store_from_config(&target_config, &state, blobs.as_ref());
+    let store = yum_store_from_config(&target_config, state, blobs.as_ref());
 
     match store
         .commit_package(&blob_id, &blake3, &sha256, size, &filename, &directory)
@@ -91,55 +132,62 @@ pub async fn upload(
     {
         Ok(_) => {
             api_helpers::propagate_staleness_to_parents(
-                &state,
-                &repo_name,
+                state,
+                &config.name,
                 ArtifactFormat::Yum,
                 "_yum/metadata_stale",
             )
             .await;
-            Ok(StatusCode::OK.into_response())
+            StatusCode::OK.into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "yum upload failed");
-            Err(e)
+            e.into_response()
         }
     }
 }
 
-// =============================================================================
-// POST /yum/{repo}/snapshots — create metadata snapshot
-// =============================================================================
+async fn handle_create_snapshot(
+    state: &FormatState,
+    config: &RepoConfig,
+    body: Body,
+) -> Response {
+    let bytes = match api_helpers::body_to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let req: CreateSnapshotRequest = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            return DepotError::BadRequest(format!("invalid JSON body: {e}")).into_response();
+        }
+    };
 
-#[derive(serde::Deserialize)]
-pub struct CreateSnapshotRequest {
-    pub name: String,
-}
+    if config.format() != ArtifactFormat::Yum {
+        return DepotError::BadRequest("repo is not a Yum repo".into()).into_response();
+    }
 
-pub async fn create_snapshot(
-    State(state): State<FormatState>,
-    Path(repo_name): Path<String>,
-    axum::Json(body): axum::Json<CreateSnapshotRequest>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    let blobs = state.blob_store(&config.store).await?;
-    let store = yum_store_from_config(&config, &state, blobs.as_ref());
+    let blobs = match state.blob_store(&config.store).await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let store = yum_store_from_config(config, state, blobs.as_ref());
 
     // Ensure metadata is fresh before snapshotting
     let is_stale = store.is_metadata_stale().await.unwrap_or(false);
     if is_stale {
         let signing_key = store.get_signing_key().await.unwrap_or(None);
-        store.rebuild_metadata(signing_key.as_deref()).await.map_err(|e| {
+        if let Err(e) = store.rebuild_metadata(signing_key.as_deref()).await {
             tracing::error!(repo = config.name, error = %e, "metadata rebuild failed before snapshot");
-            e
-        })?;
+            return e.into_response();
+        }
     }
 
     let signing_key = store.get_signing_key().await.unwrap_or(None);
-    store
-        .create_snapshot(&body.name, signing_key.as_deref())
-        .await?;
-    Ok(StatusCode::CREATED.into_response())
+    match store.create_snapshot(&req.name, signing_key.as_deref()).await {
+        Ok(_) => StatusCode::CREATED.into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 // =============================================================================
@@ -150,7 +198,29 @@ pub async fn try_handle_repository_path(
     state: &FormatState,
     config: &RepoConfig,
     path: &str,
+    query: Option<&str>,
 ) -> Option<Response> {
+    let _ = query;
+    // repodata/repomd.xml.key → PGP public key (served as application/pgp-keys).
+    // Matches either the root form or the depth-prefixed form (see is_repodata_path).
+    if path.ends_with("/repodata/repomd.xml.key") || path == "repodata/repomd.xml.key" {
+        let blobs = match state.blob_store(&config.store).await {
+            Ok(b) => b,
+            Err(e) => return Some(e.into_response()),
+        };
+        let store = yum_store_from_config(config, state, blobs.as_ref());
+        return Some(match store.get_public_key().await {
+            Ok(Some(key)) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/pgp-keys")],
+                key,
+            )
+                .into_response(),
+            Ok(None) => DepotError::NotFound("no public key configured".into()).into_response(),
+            Err(e) => e.into_response(),
+        });
+    }
+
     // repodata/* or {prefix}/repodata/* → metadata
     // Matches: "repodata/foo" (depth=0) or "p1/7/x86_64/repodata/foo" (depth>0)
     if is_repodata_path(path) {
@@ -185,139 +255,6 @@ fn is_repodata_path(path: &str) -> bool {
         return !rest.is_empty();
     }
     false
-}
-
-// =============================================================================
-// GET /yum/{repo}/repodata/repomd.xml
-// =============================================================================
-
-pub async fn get_repomd(
-    State(state): State<FormatState>,
-    Path(repo_name): Path<String>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => serve_metadata(&state, &config, "repodata/repomd.xml").await,
-        RepoType::Cache => cache_serve_metadata(&state, &config, "repodata/repomd.xml").await,
-        RepoType::Proxy => proxy_serve_metadata(&state, &config, "repodata/repomd.xml").await,
-    })
-}
-
-// =============================================================================
-// GET /yum/{repo}/repodata/repomd.xml.asc
-// =============================================================================
-
-pub async fn get_repomd_asc(
-    State(state): State<FormatState>,
-    Path(repo_name): Path<String>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => serve_metadata(&state, &config, "repodata/repomd.xml.asc").await,
-        RepoType::Cache => cache_serve_metadata(&state, &config, "repodata/repomd.xml.asc").await,
-        RepoType::Proxy => proxy_serve_metadata(&state, &config, "repodata/repomd.xml.asc").await,
-    })
-}
-
-// =============================================================================
-// GET /yum/{repo}/repodata/repomd.xml.key
-// =============================================================================
-
-pub async fn get_public_key(
-    State(state): State<FormatState>,
-    Path(repo_name): Path<String>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    let blobs = state.blob_store(&config.store).await?;
-    let store = yum_store_from_config(&config, &state, blobs.as_ref());
-
-    match store.get_public_key().await {
-        Ok(Some(key)) => Ok((
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/pgp-keys")],
-            key,
-        )
-            .into_response()),
-        Ok(None) => Err(DepotError::NotFound("no public key configured".into())),
-        Err(e) => Err(e),
-    }
-}
-
-// =============================================================================
-// GET /yum/{repo}/repodata/{filename}
-// =============================================================================
-
-pub async fn get_repodata_file(
-    State(state): State<FormatState>,
-    Path((repo_name, filename)): Path<(String, String)>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    let meta_path = format!("repodata/{filename}");
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => serve_metadata(&state, &config, &meta_path).await,
-        RepoType::Cache => cache_serve_metadata(&state, &config, &meta_path).await,
-        RepoType::Proxy => proxy_serve_metadata(&state, &config, &meta_path).await,
-    })
-}
-
-// =============================================================================
-// GET /yum/{repo}/Packages/{letter}/{filename}
-// =============================================================================
-
-pub async fn download_package(
-    State(state): State<FormatState>,
-    Path((repo_name, path)): Path<(String, String)>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    // Depth-prefixed repodata paths (e.g. p1/7/x86_64/repodata/repomd.xml)
-    // arrive here via the catch-all route — dispatch them to metadata serving.
-    if is_repodata_path(&path) {
-        return Ok(match config.repo_type() {
-            RepoType::Hosted => serve_metadata(&state, &config, &path).await,
-            RepoType::Cache => cache_serve_metadata(&state, &config, &path).await,
-            RepoType::Proxy => proxy_serve_metadata(&state, &config, &path).await,
-        });
-    }
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => hosted_download(&state, &config.name, &path).await,
-        RepoType::Cache => cache_download(&state, &config, &path).await,
-        RepoType::Proxy => proxy_download(&state, &config, &path, 0).await,
-    })
-}
-
-// =============================================================================
-// GET /yum/{repo}/snapshots/{snapshot}/repodata/repomd.xml
-// =============================================================================
-
-pub async fn get_snapshot_repomd(
-    State(state): State<FormatState>,
-    Path((repo_name, snapshot)): Path<(String, String)>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    let meta_path = format!("snapshots/{snapshot}/repodata/repomd.xml");
-    Ok(serve_snapshot_metadata(&state, &config, &meta_path).await)
-}
-
-// =============================================================================
-// GET /yum/{repo}/snapshots/{snapshot}/repodata/{filename}
-// =============================================================================
-
-pub async fn get_snapshot_repodata_file(
-    State(state): State<FormatState>,
-    Path((repo_name, snapshot, filename)): Path<(String, String, String)>,
-) -> Result<Response, DepotError> {
-    let config = api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Yum).await?;
-
-    let meta_path = format!("snapshots/{snapshot}/repodata/{filename}");
-    Ok(serve_snapshot_metadata(&state, &config, &meta_path).await)
 }
 
 // =============================================================================
@@ -741,170 +678,6 @@ async fn rebuild_proxy_yum_metadata(
     proxy_store.store_repomd_pub(repomd.as_bytes()).await?;
 
     Ok(())
-}
-
-// =============================================================================
-// Hosted download
-// =============================================================================
-
-async fn hosted_download(state: &FormatState, repo_name: &str, path: &str) -> Response {
-    let (blobs, blob_config) = match api_helpers::resolve_repo_blob_store(state, repo_name).await {
-        Ok(b) => b,
-        Err(e) => return e.into_response(),
-    };
-    let store = YumStore {
-        repo: repo_name,
-        kv: state.kv.as_ref(),
-        blobs: blobs.as_ref(),
-        store: &blob_config.store,
-        updater: &state.updater,
-        repodata_depth: 0, // downloads don't need depth
-    };
-
-    match store.get_package(path).await {
-        Ok(Some((reader, size, _record))) => {
-            let stream = ReaderStream::new(reader);
-            let body = Body::from_stream(stream);
-            (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, "application/x-rpm".to_string()),
-                    (header::CONTENT_LENGTH, size.to_string()),
-                ],
-                body,
-            )
-                .into_response()
-        }
-        Ok(None) => DepotError::NotFound("package not found".into()).into_response(),
-        Err(e) => e.into_response(),
-    }
-}
-
-// =============================================================================
-// Cache download
-// =============================================================================
-
-async fn cache_download(state: &FormatState, config: &RepoConfig, path: &str) -> Response {
-    let RepoKind::Cache {
-        ref upstream_url,
-        ref upstream_auth,
-        ..
-    } = config.kind
-    else {
-        return DepotError::Internal("expected cache repo kind".into()).into_response();
-    };
-
-    let blobs = match state.blob_store(&config.store).await {
-        Ok(b) => b,
-        Err(e) => return e.into_response(),
-    };
-    let store = yum_store_from_config(config, state, blobs.as_ref());
-
-    // Check local cache first
-    if let Ok(Some((reader, size, _record))) = store.get_package(path).await {
-        let stream = ReaderStream::new(reader);
-        let body = Body::from_stream(stream);
-        return (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "application/x-rpm".to_string()),
-                (header::CONTENT_LENGTH, size.to_string()),
-            ],
-            body,
-        )
-            .into_response();
-    }
-
-    // Fetch from upstream — use the original request path (preserves upstream layout)
-    let upstream_pkg_url = format!("{}/{path}", upstream_url.trim_end_matches('/'));
-
-    let builder = state.http.get(&upstream_pkg_url);
-    let builder = depot_core::repo::apply_upstream_auth(builder, upstream_auth.as_ref());
-
-    let upstream_start = std::time::Instant::now();
-    match builder.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            depot_core::repo::emit_upstream_event(
-                "GET",
-                &upstream_pkg_url,
-                resp.status().as_u16(),
-                upstream_start.elapsed(),
-                0,
-                resp.content_length().unwrap_or(0),
-                "upstream.yum.package",
-            );
-            let data = match resp.bytes().await {
-                Ok(b) => b.to_vec(),
-                Err(e) => {
-                    return DepotError::Upstream(format!("failed to read upstream: {e}"))
-                        .into_response();
-                }
-            };
-
-            // Cache locally — derive directory and filename from the request path
-            let (cache_dir, cache_filename) = match path.rsplit_once('/') {
-                Some((d, f)) => (d, f),
-                None => ("", path),
-            };
-            let _ = store.put_package(&data, cache_filename, cache_dir).await;
-
-            (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/x-rpm")],
-                Body::from(data),
-            )
-                .into_response()
-        }
-        _ => DepotError::NotFound("package not found".into()).into_response(),
-    }
-}
-
-// =============================================================================
-// Proxy download
-// =============================================================================
-
-fn proxy_download<'a>(
-    state: &'a FormatState,
-    config: &'a RepoConfig,
-    path: &'a str,
-    depth: u8,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + 'a>> {
-    Box::pin(async move { proxy_download_inner(state, config, path, depth).await })
-}
-
-async fn proxy_download_inner(
-    state: &FormatState,
-    config: &RepoConfig,
-    path: &str,
-    depth: u8,
-) -> Response {
-    if depth >= MAX_PROXY_DEPTH {
-        return DepotError::BadRequest("proxy depth limit exceeded".into()).into_response();
-    }
-
-    let RepoKind::Proxy { ref members, .. } = config.kind else {
-        return DepotError::Internal("expected proxy repo kind".into()).into_response();
-    };
-
-    for member_name in members {
-        let mn = member_name.clone();
-        let member_config = match service::get_repo(state.kv.as_ref(), &mn).await {
-            Ok(Some(c)) if c.format() == ArtifactFormat::Yum => c,
-            _ => continue,
-        };
-
-        let resp = match member_config.repo_type() {
-            RepoType::Hosted => hosted_download(state, &member_config.name, path).await,
-            RepoType::Cache => cache_download(state, &member_config, path).await,
-            RepoType::Proxy => proxy_download(state, &member_config, path, depth + 1).await,
-        };
-
-        if resp.status() == StatusCode::OK {
-            return resp;
-        }
-    }
-
-    DepotError::NotFound("package not found in any member".into()).into_response()
 }
 
 // =============================================================================

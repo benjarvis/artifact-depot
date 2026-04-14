@@ -9,10 +9,9 @@
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
-    http::{header, StatusCode},
+    extract::Multipart,
+    http::{header, HeaderMap, Method, StatusCode},
     response::{Html, IntoResponse, Response},
-    Extension,
 };
 use std::collections::HashSet;
 use tokio_util::io::ReaderStream;
@@ -26,24 +25,23 @@ use depot_core::format_state::FormatState;
 use depot_core::repo::apply_upstream_auth;
 use depot_core::service;
 use depot_core::store::kv::{
-    ArtifactFormat, ArtifactRecord, Capability, PypiProjectIndex, PypiProjectLink, RepoConfig,
-    RepoKind, RepoType, CURRENT_RECORD_VERSION,
+    ArtifactFormat, ArtifactRecord, PypiProjectIndex, PypiProjectLink, RepoConfig, RepoKind,
+    RepoType, CURRENT_RECORD_VERSION,
 };
 
 store_from_config_fn!(pypi_store_from_config, PypiStore);
 
-// =============================================================================
-// POST /pypi/{repo}/ — twine upload
-// =============================================================================
-
-pub async fn upload(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
+/// Core twine-upload processing shared by the `/repository/{repo}/` write
+/// dispatcher. The caller is responsible for reconstructing a `Multipart`
+/// from raw body parts when dispatched via the unified endpoint.
+async fn process_upload(
+    state: &FormatState,
+    user_str: &str,
+    repo_name: &str,
     mut multipart: Multipart,
 ) -> Result<Response, DepotError> {
     let (target_repo, target_config, blobs) =
-        depot_core::api_helpers::upload_preamble(&state, &user.0, &repo_name, ArtifactFormat::PyPI)
+        depot_core::api_helpers::upload_preamble(state, user_str, repo_name, ArtifactFormat::PyPI)
             .await?;
 
     let mut name = None;
@@ -132,14 +130,55 @@ pub async fn upload(
 
     let _ = store.set_stale_flag().await;
     depot_core::api_helpers::propagate_staleness_to_parents(
-        &state,
-        &repo_name,
+        state,
+        repo_name,
         ArtifactFormat::PyPI,
         "_pypi/metadata_stale",
     )
     .await;
 
     Ok(StatusCode::OK.into_response())
+}
+
+// =============================================================================
+// /repository/{repo}/... dispatch for PyPI repos (writes)
+// =============================================================================
+
+/// Handle a write request under `/repository/{repo}/<path>` for a PyPI repo.
+/// Returns `None` if the (method, path) combination is not a PyPI write.
+pub async fn try_handle_repository_write(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Option<Response> {
+    if method == Method::POST && (path.is_empty() || path == "/") {
+        return Some(handle_upload(state, user, config, method, headers, body).await);
+    }
+    None
+}
+
+async fn handle_upload(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    headers: &HeaderMap,
+    body: Body,
+) -> Response {
+    let multipart = match depot_core::api_helpers::multipart_from_body(method, headers, body).await
+    {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match process_upload(state, &user.0, &config.name, multipart).await {
+        Ok(resp) => resp,
+        Err(e) => e.into_response(),
+    }
 }
 
 // =============================================================================
@@ -150,7 +189,9 @@ pub async fn try_handle_repository_path(
     state: &FormatState,
     config: &RepoConfig,
     path: &str,
+    query: Option<&str>,
 ) -> Option<Response> {
+    let _ = query;
     // simple/ → project list
     if path == "simple" || path == "simple/" {
         return Some(match config.repo_type() {
@@ -188,30 +229,6 @@ pub async fn try_handle_repository_path(
     }
 
     None
-}
-
-// =============================================================================
-// GET /pypi/{repo}/simple/ — PEP 503 project list
-// =============================================================================
-
-pub async fn simple_index(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-) -> Result<Response, DepotError> {
-    let config =
-        depot_core::api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::PyPI)
-            .await?;
-    state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await?;
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => hosted_simple_index(&state, &repo_name).await,
-        RepoType::Cache => cache_simple_index(&state, &config).await,
-        RepoType::Proxy => proxy_simple_index(&state, &config).await,
-    })
 }
 
 async fn hosted_simple_index(state: &FormatState, repo_name: &str) -> Response {
@@ -349,30 +366,6 @@ async fn proxy_simple_index(state: &FormatState, config: &RepoConfig) -> Respons
         Ok(Some(html)) => Html(html).into_response(),
         _ => DepotError::NotFound("index not found".into()).into_response(),
     }
-}
-
-// =============================================================================
-// GET /pypi/{repo}/simple/{project}/ — PEP 503 project file list
-// =============================================================================
-
-pub async fn simple_project(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, project)): Path<(String, String)>,
-) -> Result<Response, DepotError> {
-    let config =
-        depot_core::api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::PyPI)
-            .await?;
-    state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await?;
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => hosted_simple_project(&state, &repo_name, &project).await,
-        RepoType::Cache => cache_simple_project(&state, &config, &project).await,
-        RepoType::Proxy => proxy_simple_project(&state, &config, &project).await,
-    })
 }
 
 fn render_project_files(_repo_name: &str, files: &[(String, ArtifactRecord)]) -> String {
@@ -748,30 +741,6 @@ async fn proxy_simple_project(state: &FormatState, config: &RepoConfig, project:
 
     // Render using the proxy repo name for download URLs.
     Html(render_project_files(&config.name, &all_files)).into_response()
-}
-
-// =============================================================================
-// GET /pypi/{repo}/packages/{name}/{version}/{filename} — download
-// =============================================================================
-
-pub async fn download_package(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, name, version, filename)): Path<(String, String, String, String)>,
-) -> Result<Response, DepotError> {
-    let config =
-        depot_core::api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::PyPI)
-            .await?;
-    state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await?;
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => hosted_download(&state, &repo_name, &name, &version, &filename).await,
-        RepoType::Cache => cache_download(&state, &config, &name, &version, &filename).await,
-        RepoType::Proxy => proxy_download(&state, &config, &name, &version, &filename).await,
-    })
 }
 
 /// Build a streaming response for a PyPI package blob.
