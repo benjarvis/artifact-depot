@@ -8,6 +8,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['*']
   workflow_dispatch:
 
 concurrency:
@@ -22,113 +23,146 @@ jobs:
   ci:
     name: lint - build - test
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system packages
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build devcontainer image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .devcontainer
+          file: .devcontainer/Dockerfile
+          load: true
+          tags: depot-dev:ci
+          cache-from: type=gha,scope=devcontainer
+          cache-to: type=gha,mode=max,scope=devcontainer
+
+      - name: Start devcontainer
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            mold \
-            nginx \
-            containerd \
-            openssl \
-            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
-            libxrandr2 libgbm1 libpango-1.0-0 libasound2
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94.0"
-          components: rustfmt, clippy
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24.14.0"
-          cache: npm
-          cache-dependency-path: ui/frontend/package-lock.json
-
-      - name: Cache cargo registry/target
-        uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install cargo-deny and cargo-about
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny,cargo-about
-
-      - name: Install frontend deps
-        working-directory: ui/frontend
-        run: npm ci
-
-      - name: Install Playwright browsers
-        working-directory: ui/frontend
-        run: npx playwright install
+          docker run -d --name dev \
+            --privileged \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            -e CARGO_TERM_COLOR \
+            -e DEPOT_INSTRUMENT_FRONTEND \
+            depot-dev:ci \
+            sleep infinity
 
       # --- Lints (each step runs even if a previous one failed) ---
-
-      - name: Lint - cargo fmt
-        if: success() || failure()
-        run: cargo fmt --check
-
-      - name: Lint - cargo clippy
-        if: success() || failure()
-        run: cargo clippy -- -D warnings
-
-      - name: Lint - cargo-deny licenses
-        if: success() || failure()
-        run: cargo deny check licenses
-
-      - name: Lint - cargo-deny advisories
-        if: success() || failure()
-        run: cargo deny check advisories
-
-      - name: Lint - npm license-checker
-        if: success() || failure()
-        working-directory: ui/frontend
-        run: npx --yes license-checker --failOn 'GPL-2.0;GPL-3.0;AGPL-3.0;AGPL-1.0;SSPL-1.0;EUPL-1.1;EUPL-1.2' > /dev/null
-
-      - name: Lint - npm audit
-        if: success() || failure()
-        working-directory: ui/frontend
-        run: npm audit
+      # REUSE, cargo fmt, and cargo-deny run before npm ci and any
+      # compilation so they see a clean tree (the reuse 2.x package
+      # in the devcontainer does not respect .gitignore).
 
       - name: Lint - REUSE compliance
         if: success() || failure()
-        uses: fsfe/reuse-action@v3
+        run: docker exec dev reuse lint
+
+      - name: Lint - cargo fmt
+        if: success() || failure()
+        run: docker exec dev cargo fmt --check
+
+      - name: Lint - cargo-deny licenses
+        if: success() || failure()
+        run: docker exec dev cargo deny check licenses
+
+      - name: Lint - cargo-deny advisories
+        if: success() || failure()
+        run: docker exec dev cargo deny check advisories
+
+      - name: Install frontend deps
+        run: docker exec -w /workspace/ui/frontend dev npm ci
+
+      - name: Lint - cargo clippy
+        if: success() || failure()
+        run: docker exec dev cargo clippy -- -D warnings
+
+      - name: Lint - npm license-checker
+        if: success() || failure()
+        run: docker exec -w /workspace/ui/frontend dev npx --yes license-checker --failOn 'GPL-2.0;GPL-3.0;AGPL-3.0;AGPL-1.0;SSPL-1.0;EUPL-1.1;EUPL-1.2'
+
+      - name: Lint - npm audit
+        if: success() || failure()
+        run: docker exec -w /workspace/ui/frontend dev npm audit
 
       # --- Notices (prerequisite of build) ---
 
       - name: Notices - cargo
-        run: bash scripts/generate-notices-cargo.sh
+        run: docker exec dev bash scripts/generate-notices-cargo.sh
 
       - name: Notices - npm
-        run: bash scripts/generate-notices-npm.sh
+        run: docker exec dev bash scripts/generate-notices-npm.sh
 
       - name: Notices - combined
-        run: bash scripts/generate-notices.sh
+        run: docker exec dev bash scripts/generate-notices.sh
 
       # --- Build ---
 
       - name: Build - cargo build
-        run: cargo build
+        run: docker exec dev cargo build
 
       # --- Tests ---
 
       - name: Test - cargo test
-        run: cargo test -q
+        run: docker exec dev cargo test -q
 
       - name: Test - UI (Playwright in netns)
-        run: sudo -E --preserve-env=PATH,HOME bash scripts/ui-test.sh --skip-build
+        run: docker exec dev bash scripts/ui-test.sh --skip-build
 
-      - name: Test - DynamoDB (skipped unless JAR installed)
-        run: bash scripts/ext-test.sh dynamodb
+      - name: Test - DynamoDB
+        run: docker exec -e DYNAMODB_LOCAL_DIR=/usr/local/lib/dynamodb-local dev bash scripts/ext-test.sh dynamodb
 
-      - name: Test - Docker auth
-        run: sudo -E --preserve-env=PATH,HOME bash scripts/ext-test.sh docker-auth
+      - name: Test - Docker auth (skipped without dind)
+        run: docker exec dev bash scripts/ext-test.sh docker-auth
+
+      - name: Stop devcontainer
+        if: always()
+        run: docker rm -f dev || true
+
+  release:
+    name: build and publish release image
+    needs: ci
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+
+      - name: Build and push release image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=release
+          cache-to: type=gha,mode=max,scope=release
