@@ -10,7 +10,7 @@ RUN apt-get -y update && \
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
     ln -s /root/.cargo/bin/* /usr/local/bin/ && \
-    apt-get -y --no-install-recommends install iproute2 python3 default-jre-headless reuse mold
+    apt-get -y --no-install-recommends install iproute2 python3 default-jre-headless reuse mold gh
 
 # Playwright system dependencies (Chromium on Ubuntu 24.04)
 RUN apt-get -y --no-install-recommends install \
