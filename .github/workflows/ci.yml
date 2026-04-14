@@ -45,7 +45,7 @@ jobs:
       - name: Start devcontainer
         run: |
           docker run -d --name dev \
-            --cap-add=SYS_ADMIN --cap-add=NET_ADMIN \
+            --privileged \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
             -e CARGO_TERM_COLOR \
