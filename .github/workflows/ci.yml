@@ -53,18 +53,18 @@ jobs:
             depot-dev:ci \
             sleep infinity
 
-      - name: Install frontend deps
-        run: docker exec -w /workspace/ui/frontend dev npm ci
-
       # --- Lints (each step runs even if a previous one failed) ---
+      # REUSE, cargo fmt, and cargo-deny run before npm ci and any
+      # compilation so they see a clean tree (the reuse 2.x package
+      # in the devcontainer does not respect .gitignore).
+
+      - name: Lint - REUSE compliance
+        if: success() || failure()
+        run: docker exec dev reuse lint
 
       - name: Lint - cargo fmt
         if: success() || failure()
         run: docker exec dev cargo fmt --check
-
-      - name: Lint - cargo clippy
-        if: success() || failure()
-        run: docker exec dev cargo clippy -- -D warnings
 
       - name: Lint - cargo-deny licenses
         if: success() || failure()
@@ -74,6 +74,13 @@ jobs:
         if: success() || failure()
         run: docker exec dev cargo deny check advisories
 
+      - name: Install frontend deps
+        run: docker exec -w /workspace/ui/frontend dev npm ci
+
+      - name: Lint - cargo clippy
+        if: success() || failure()
+        run: docker exec dev cargo clippy -- -D warnings
+
       - name: Lint - npm license-checker
         if: success() || failure()
         run: docker exec -w /workspace/ui/frontend dev npx --yes license-checker --failOn 'GPL-2.0;GPL-3.0;AGPL-3.0;AGPL-1.0;SSPL-1.0;EUPL-1.1;EUPL-1.2'
@@ -81,10 +88,6 @@ jobs:
       - name: Lint - npm audit
         if: success() || failure()
         run: docker exec -w /workspace/ui/frontend dev npm audit
-
-      - name: Lint - REUSE compliance
-        if: success() || failure()
-        run: docker exec dev reuse lint
 
       # --- Notices (prerequisite of build) ---
 
