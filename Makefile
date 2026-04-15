@@ -4,15 +4,10 @@
 
 .PHONY: all build test debug release debug_test release_test lint security fmt demo demo-data coverage docker clean notices \
 	notices-cargo notices-npm \
-<<<<<<< HEAD
 	lint-cargo-licenses lint-npm-licenses lint-reuse lint-fmt lint-clippy \
 	security-cargo-advisories security-npm-audit \
-	test-debug test-ui test-dynamodb test-docker-auth
-=======
-	lint-cargo-licenses lint-cargo-advisories lint-npm-licenses lint-npm-audit lint-reuse lint-fmt lint-clippy \
 	test-debug test-ui test-dynamodb test-docker-auth \
-	docs docs-serve
->>>>>>> 79562daf (Build docs/ as a just-the-docs site published to GitHub Pages)
+	docs docs-serve screenshots
 
 all: test
 
@@ -138,6 +133,13 @@ docs:
 
 docs-serve:
 	@cd docs && bundle install --quiet && bundle exec jekyll serve --livereload --host 0.0.0.0 --baseurl ""
+
+# Generate the curated UI screenshots embedded in docs/screenshots.md.
+# Boots a depot, seeds with `depot-bench demo`, kicks off `depot-bench
+# trickle` for live activity, then drives Chromium via the `screenshots`
+# Playwright project. Outputs land in docs/screenshots/ ready to commit.
+screenshots:
+	@bash scripts/screenshots.sh
 
 # Utility
 clean:
