@@ -1,4 +1,18 @@
-FROM ubuntu:24.04
+ARG DOCKER_MIRROR=
+FROM ${DOCKER_MIRROR:+${DOCKER_MIRROR}/}ubuntu:24.04
+
+ARG APT_MIRROR=
+# Narrow the sources to the components and suites we actually consume
+# (main + universe; no backports). This also lets APT_MIRROR point at
+# mirrors that do not expose restricted, multiverse, or noble-backports.
+RUN sed -Ei \
+        -e 's/^Components:.*/Components: main universe/' \
+        -e 's/ noble-backports//' \
+        /etc/apt/sources.list.d/ubuntu.sources \
+    && if [ -n "$APT_MIRROR" ]; then \
+         sed -Ei "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#http://${APT_MIRROR}/#g" \
+           /etc/apt/sources.list.d/ubuntu.sources; \
+       fi
 
 # Unminimize, then install everything from apt in a single pass.
 RUN apt-get -y update && \
@@ -8,6 +22,7 @@ RUN apt-get -y update && \
     apt-get -y --no-install-recommends install \
       openssh-client git npm curl wget vim make build-essential \
       iproute2 python3 pipx default-jre-headless mold gh \
+      docker.io containerd nginx-light openssl \
       libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
       libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 \
       libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 \
@@ -22,7 +37,7 @@ RUN apt-get -y update && \
 RUN npm install -g @openai/codex && \
     curl -fsSL https://claude.ai/install.sh | bash && \
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0 && \
     ln -s /root/.cargo/bin/* /usr/local/bin/ && \
     cargo install cargo-deny cargo-about && \
     PIPX_BIN_DIR=/usr/local/bin pipx install reuse

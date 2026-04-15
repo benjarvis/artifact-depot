@@ -238,6 +238,8 @@ TOML
     SERVER_PID=""
     CTR_PID=""
 
+    SYSTEM_CA="/usr/local/share/ca-certificates/depot-test.crt"
+    DOCKERD_ARGS=""
     cleanup() {
       echo "Cleaning up..."
       nginx -s stop -c "$TMP_DIR/nginx.conf" 2>/dev/null || true
@@ -247,10 +249,34 @@ TOML
       [ -n "$CTR_PID" ] && wait "$CTR_PID" 2>/dev/null || true
       docker logout "$REGISTRY" 2>/dev/null || true
       docker rmi "$REGISTRY/docker-auth-test/testimg:v1" 2>/dev/null || true
-      rm -rf /etc/docker/certs.d/"$REGISTRY" 2>/dev/null || true
+      if [ -f "$SYSTEM_CA" ]; then
+        rm -f "$SYSTEM_CA"
+        update-ca-certificates --fresh >/dev/null 2>&1 || true
+        if [ -n "$DOCKERD_ARGS" ]; then
+          restart_dockerd
+        fi
+      fi
       rm -rf "$TMP_DIR"
     }
     trap cleanup EXIT
+
+    restart_dockerd() {
+      local pid
+      pid=$(pgrep -x dockerd | head -1)
+      if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+        while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+      fi
+      # shellcheck disable=SC2086
+      nohup dockerd $DOCKERD_ARGS >/var/log/dockerd.log 2>&1 &
+      for _ in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && return 0
+        sleep 1
+      done
+      echo "  FAIL: dockerd did not become ready after restart"
+      tail -30 /var/log/dockerd.log
+      return 1
+    }
 
     # Generate self-signed TLS cert
     echo "=== Generating TLS certificate ==="
@@ -439,7 +465,20 @@ NGINX
     CTR_ROOT="$TMP_DIR/containerd"
     CTR_STATE="$TMP_DIR/containerd-state"
     CTR_SOCK="$TMP_DIR/containerd.sock"
-    mkdir -p "$CTR_ROOT" "$CTR_STATE"
+    CTR_HOSTS="$TMP_DIR/hosts.d"
+    mkdir -p "$CTR_ROOT" "$CTR_STATE" "$CTR_HOSTS/${REGISTRY}"
+
+    # Modern ctr restricts --skip-verify and --tlscacert to --local mode,
+    # so daemon-driven pulls have to advertise the self-signed CA via the
+    # hosts.d directory format passed with --hosts-dir.
+    cat > "$CTR_HOSTS/${REGISTRY}/hosts.toml" <<HOSTS
+server = "https://${REGISTRY}"
+
+[host."https://${REGISTRY}"]
+  capabilities = ["pull", "resolve"]
+  ca = "$TMP_DIR/cert.pem"
+HOSTS
+
     cat > "$TMP_DIR/containerd-config.toml" <<CTR_TOML
 version = 2
 root = "$CTR_ROOT"
@@ -461,14 +500,14 @@ CTR_TOML
     done
 
     if ctr -a "$CTR_SOCK" images pull \
-        --skip-verify \
+        --hosts-dir "$CTR_HOSTS" \
         -u testpull:pullpass123 \
         "${REGISTRY}/docker-auth-test/testimg:v1" >/dev/null 2>&1; then
       echo "  PASS: ctr pull succeeded"
     else
       echo "  FAIL: ctr pull failed"
       ctr -a "$CTR_SOCK" images pull \
-        --skip-verify \
+        --hosts-dir "$CTR_HOSTS" \
         -u testpull:pullpass123 \
         "${REGISTRY}/docker-auth-test/testimg:v1" 2>&1 || true
       exit 1
@@ -477,8 +516,20 @@ CTR_TOML
     # --- Test 3: docker pull ---
     echo ""
     echo "=== Test 3: docker pull with auth ==="
-    mkdir -p "/etc/docker/certs.d/${REGISTRY}"
-    cp "$TMP_DIR/cert.pem" "/etc/docker/certs.d/${REGISTRY}/ca.crt"
+    # Docker daemon's `insecure-registries` only covers the registry's
+    # /v2/ API path; OAuth token requests (the realm URL returned in
+    # WWW-Authenticate) still go through normal TLS verification. Install
+    # the self-signed cert as a system CA and restart dockerd, since Go
+    # caches the system cert pool at process start.
+    DOCKERD_PID=$(pgrep -x dockerd | head -1)
+    if [ -z "$DOCKERD_PID" ]; then
+      echo "  SKIP: dockerd is not running (start it before running this test)"
+      exit 0
+    fi
+    DOCKERD_ARGS=$(tr '\0' ' ' < "/proc/$DOCKERD_PID/cmdline" | sed 's/^[^ ]* //; s/ *$//')
+    cp "$TMP_DIR/cert.pem" "$SYSTEM_CA"
+    update-ca-certificates >/dev/null 2>&1
+    restart_dockerd || exit 1
 
     if echo "pullpass123" | docker login -u testpull --password-stdin "$REGISTRY" >/dev/null 2>&1; then
       echo "  PASS: docker login succeeded"

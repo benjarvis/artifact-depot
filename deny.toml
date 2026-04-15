@@ -47,6 +47,13 @@ ignore = [
     # thread_rng during reseed, which we never do. Pinned to 0.8 by
     # transitive deps; will resolve when deps migrate to rand 0.9+.
     "RUSTSEC-2026-0097",
+    # rustls-webpki 0.101.7 name-constraint advisories — only reachable via
+    # rustls 0.21 pinned by aws-smithy-http-client (AWS SDK). No
+    # semver-compatible fix; waiting on AWS SDK to migrate off rustls 0.21.
+    # We connect only to trusted AWS S3/DynamoDB endpoints, so misparsing of
+    # name constraints in attacker-controlled certs is not reachable.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
 ]
 
 [sources]

@@ -28,9 +28,13 @@ export const useRepoStore = defineStore('repos', () => {
 
   function applyEvent(event: string, payload: any) {
     switch (event) {
-      case 'repo_created':
-        repos.value.push(payload.repo ?? payload)
+      case 'repo_created': {
+        const repo = payload.repo ?? payload
+        if (!repos.value.some(r => r.name === repo.name)) {
+          repos.value.push(repo)
+        }
         break
+      }
       case 'repo_updated': {
         const repo = payload.repo ?? payload
         const idx = repos.value.findIndex(r => r.name === repo.name)
