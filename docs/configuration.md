@@ -1,3 +1,8 @@
+---
+title: Configuration
+nav_order: 3
+---
+
 # Configuration Reference
 
 Depot is configured via a TOML file, passed with `-c` (default: `depotd.toml`). All fields have sensible defaults -- an empty file (or no file at all) produces a working single-node server on port 8080 with an embedded redb database. Blob stores must be created via the REST API on first boot before repositories can accept writes.

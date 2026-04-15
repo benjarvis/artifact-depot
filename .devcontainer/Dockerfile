@@ -55,3 +55,14 @@ RUN curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o 
     tar xzf /tmp/helm.tar.gz -C /tmp && \
     mv /tmp/linux-amd64/helm /usr/local/bin/helm && \
     rm -rf /tmp/helm.tar.gz /tmp/linux-amd64
+
+# Ruby + Bundler for the Jekyll docs site (just-the-docs theme).
+# Ubuntu 24.04 ships Ruby 3.2 in `ruby-full`, which is sufficient for
+# Jekyll 4 + just-the-docs 0.10.  The native-gem build tools (libffi-dev,
+# zlib1g-dev, libyaml-dev) are needed because sass-embedded compiles native
+# extensions during `bundle install`.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ruby-full ruby-bundler ruby-dev \
+        libffi-dev zlib1g-dev libyaml-dev && \
+    rm -rf /var/lib/apt/lists/*

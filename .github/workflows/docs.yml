@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: 2026 Artifact Depot Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Build the docs/ Jekyll site (just-the-docs theme) and publish it to
+# GitHub Pages. The build job runs on every push to main (and on workflow
+# dispatch) so forks can verify their own changes; the deploy job is
+# gated on the upstream repository so only artifact-depot/artifact-depot
+# actually publishes.
+#
+# Pages source must be set to "GitHub Actions" in the repo settings
+# (Settings -> Pages -> Build and deployment) for the deploy step to
+# claim the github-pages environment.
+
+name: Publish docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow at most one concurrent deploy; queue but don't cancel a
+# running one (so a long-running deploy isn't aborted by a quick
+# follow-up commit).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: docs
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build site
+        working-directory: docs
+        env:
+          JEKYLL_ENV: production
+        run: bundle exec jekyll build --baseurl "${{ steps.pages.outputs.base_path }}"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  deploy:
+    needs: build
+    # Only the upstream repo publishes. Forks see the build job pass as a
+    # sanity check but don't push to Pages.
+    if: github.repository == 'artifact-depot/artifact-depot'
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

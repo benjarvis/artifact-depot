@@ -4,9 +4,15 @@
 
 .PHONY: all build test debug release debug_test release_test lint security fmt demo demo-data coverage docker clean notices \
 	notices-cargo notices-npm \
+<<<<<<< HEAD
 	lint-cargo-licenses lint-npm-licenses lint-reuse lint-fmt lint-clippy \
 	security-cargo-advisories security-npm-audit \
 	test-debug test-ui test-dynamodb test-docker-auth
+=======
+	lint-cargo-licenses lint-cargo-advisories lint-npm-licenses lint-npm-audit lint-reuse lint-fmt lint-clippy \
+	test-debug test-ui test-dynamodb test-docker-auth \
+	docs docs-serve
+>>>>>>> 79562daf (Build docs/ as a just-the-docs site published to GitHub Pages)
 
 all: test
 
@@ -124,7 +130,17 @@ coverage:
 docker:
 	docker buildx build -t depot .
 
+# Documentation site (Jekyll + just-the-docs).
+# Not wired into `all` / `test` -- doc builds shouldn't gate code CI.
+docs:
+	@echo "Building docs site..."
+	@cd docs && bundle install --quiet && bundle exec jekyll build
+
+docs-serve:
+	@cd docs && bundle install --quiet && bundle exec jekyll serve --livereload --host 0.0.0.0 --baseurl ""
+
 # Utility
 clean:
 	cargo clean
 	rm -rf build/demo
+	rm -rf docs/_site docs/.jekyll-cache

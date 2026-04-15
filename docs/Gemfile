@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Artifact Depot Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+source "https://rubygems.org"
+
+# Jekyll itself.
+gem "jekyll", "~> 4.3"
+
+# Documentation theme.
+gem "just-the-docs", "~> 0.10"
+
+# Rewrites `*.md` cross-links in source markdown to the generated
+# permalinks, so the same files render on github.com AND on the published
+# site.  GitHub-Pages-blessed plugin.
+gem "jekyll-relative-links", "~> 0.7"
+
+# Ruby 3.x removed webrick from stdlib; `jekyll serve` needs it.
+gem "webrick", "~> 1.9"

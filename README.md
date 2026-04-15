@@ -157,7 +157,7 @@ The rest of the workspace is split into focused crates: [`core/`](core) (trait-l
 
 ## Documentation
 
-See the [`docs/`](docs/) directory:
+Browse the rendered site at <https://artifact-depot.github.io/artifact-depot/>, or read the source under [`docs/`](docs/):
 
 - [Architecture](docs/architecture.md) -- storage, consistency model, clustering, GC, logging, and auth
 - [Configuration](docs/configuration.md) -- TOML config reference, runtime settings, and blob store management
