@@ -15,6 +15,7 @@
 pub mod artifacts;
 pub mod auth;
 pub mod backup;
+pub mod conversions;
 pub mod nexus_compat;
 pub mod repositories;
 pub mod roles;

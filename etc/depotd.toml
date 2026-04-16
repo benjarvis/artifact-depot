@@ -13,3 +13,15 @@ path = "build/demo/depot.redb"
 
 # [tracing]
 # otlp_endpoint = "http://localhost:4317"
+
+# Optional: declarative first-start initialization. If `[initialization]` is
+# present and the KV store is fresh (no users yet), the listed roles, stores,
+# repositories, users, and settings are created at startup so the instance is
+# fully configured without REST API calls. Ignored on already-initialized KVs.
+# See `etc/depotd.init.example.toml` for a fully populated example.
+#
+# [initialization]
+# [[initialization.stores]]
+# name = "local-files"
+# store_type = "file"
+# root = "/var/lib/depot/blobs"

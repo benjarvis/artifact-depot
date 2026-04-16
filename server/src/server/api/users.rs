@@ -42,7 +42,7 @@ impl From<UserRecord> for UserResponse {
     }
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateUserRequest {
     pub username: String,
     pub password: String,

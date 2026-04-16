@@ -41,7 +41,7 @@ impl From<RoleRecord> for RoleResponse {
     }
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateRoleRequest {
     pub name: String,
     #[serde(default)]

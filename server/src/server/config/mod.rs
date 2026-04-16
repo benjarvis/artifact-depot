@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod bootstrap;
+pub mod init;
 pub mod settings;
 
 use serde::{Deserialize, Serialize};
@@ -307,6 +308,11 @@ pub struct Config {
     /// contention overhead at high request concurrency.
     #[serde(default)]
     pub worker_threads: usize,
+
+    /// Declarative first-start initialization. Applied only on fresh KVs
+    /// (no users yet). Ignored on already-initialized clusters.
+    #[serde(default, skip_serializing)]
+    pub initialization: Option<init::InitializationConfig>,
 }
 
 #[cfg(feature = "ldap")]
@@ -317,6 +323,205 @@ fn default_true() -> bool {
 impl Config {
     pub fn tls_enabled(&self) -> bool {
         self.https.is_some()
+    }
+
+    fn validate_initialization(&self, init: &init::InitializationConfig, errors: &mut Vec<String>) {
+        use depot_core::store::kv::{ArtifactFormat, RepoType};
+        use std::collections::HashSet;
+
+        let mut role_names: HashSet<&str> = HashSet::new();
+        for r in &init.roles {
+            if r.name.is_empty() {
+                errors.push("initialization.roles: empty name".into());
+            } else if !role_names.insert(r.name.as_str()) {
+                errors.push(format!("initialization.roles: duplicate name {:?}", r.name));
+            }
+        }
+
+        let mut store_names: HashSet<&str> = HashSet::new();
+        for s in &init.stores {
+            if s.name.is_empty() {
+                errors.push("initialization.stores: empty name".into());
+                continue;
+            }
+            if !store_names.insert(s.name.as_str()) {
+                errors.push(format!(
+                    "initialization.stores: duplicate name {:?}",
+                    s.name
+                ));
+            }
+            match s.store_type.as_str() {
+                "file" => {
+                    if s.root.is_none() {
+                        errors.push(format!(
+                            "initialization.stores.{}: file stores require `root`",
+                            s.name
+                        ));
+                    }
+                    if s.io_size < 4 || s.io_size > 65536 {
+                        errors.push(format!(
+                            "initialization.stores.{}: io_size must be between 4 and 65536 KiB",
+                            s.name
+                        ));
+                    }
+                }
+                "s3" => {
+                    if s.bucket.as_ref().is_none_or(|b| b.is_empty()) {
+                        errors.push(format!(
+                            "initialization.stores.{}: s3 stores require `bucket`",
+                            s.name
+                        ));
+                    }
+                    if s.max_retries > 20 {
+                        errors.push(format!(
+                            "initialization.stores.{}: max_retries must be in [0, 20]",
+                            s.name
+                        ));
+                    }
+                    if s.connect_timeout_secs == 0 || s.connect_timeout_secs > 7200 {
+                        errors.push(format!(
+                            "initialization.stores.{}: connect_timeout_secs must be in [1, 7200]",
+                            s.name
+                        ));
+                    }
+                    if s.read_timeout_secs > 7200 {
+                        errors.push(format!(
+                            "initialization.stores.{}: read_timeout_secs must be in [0, 7200]",
+                            s.name
+                        ));
+                    }
+                    if s.retry_mode != "standard" && s.retry_mode != "adaptive" {
+                        errors.push(format!(
+                            "initialization.stores.{}: retry_mode must be \"standard\" or \"adaptive\"",
+                            s.name
+                        ));
+                    }
+                }
+                other => errors.push(format!(
+                    "initialization.stores.{}: unknown store_type {:?}",
+                    s.name, other
+                )),
+            }
+        }
+
+        let mut repo_names: HashSet<&str> = HashSet::new();
+        for r in &init.repositories {
+            if r.name.is_empty() {
+                errors.push("initialization.repositories: empty name".into());
+                continue;
+            }
+            if !repo_names.insert(r.name.as_str()) {
+                errors.push(format!(
+                    "initialization.repositories: duplicate name {:?}",
+                    r.name
+                ));
+            }
+            if !store_names.contains(r.store.as_str()) {
+                errors.push(format!(
+                    "initialization.repositories.{}: references unknown store {:?}",
+                    r.name, r.store
+                ));
+            }
+            if r.repo_type == RepoType::Cache && r.upstream_url.is_none() {
+                errors.push(format!(
+                    "initialization.repositories.{}: cache requires upstream_url",
+                    r.name
+                ));
+            }
+            if r.repo_type == RepoType::Proxy {
+                match r.members.as_ref() {
+                    Some(members) if !members.is_empty() => {
+                        if let Some(wm) = &r.write_member {
+                            if !members.contains(wm) {
+                                errors.push(format!(
+                                    "initialization.repositories.{}: write_member {:?} not in members",
+                                    r.name, wm
+                                ));
+                            }
+                        }
+                    }
+                    _ => errors.push(format!(
+                        "initialization.repositories.{}: proxy requires non-empty members",
+                        r.name
+                    )),
+                }
+            }
+            if r.cleanup_max_age_days == Some(0) {
+                errors.push(format!(
+                    "initialization.repositories.{}: cleanup_max_age_days must be >= 1",
+                    r.name
+                ));
+            }
+            if r.cleanup_max_unaccessed_days == Some(0) {
+                errors.push(format!(
+                    "initialization.repositories.{}: cleanup_max_unaccessed_days must be >= 1",
+                    r.name
+                ));
+            }
+            if let Some(depth) = r.repodata_depth {
+                if depth > 5 {
+                    errors.push(format!(
+                        "initialization.repositories.{}: repodata_depth must be 0-5",
+                        r.name
+                    ));
+                }
+                if r.format != ArtifactFormat::Yum {
+                    errors.push(format!(
+                        "initialization.repositories.{}: repodata_depth is only valid for Yum",
+                        r.name
+                    ));
+                }
+            }
+        }
+
+        // Proxy members must point at repos declared in this section (we run
+        // before any other repo creation, so KV is fresh).
+        for r in &init.repositories {
+            if let Some(members) = &r.members {
+                for m in members {
+                    if !repo_names.contains(m.as_str()) {
+                        errors.push(format!(
+                            "initialization.repositories.{}: proxy member {:?} not declared",
+                            r.name, m
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut user_names: HashSet<&str> = HashSet::new();
+        // Roles created by default-bootstrap are valid references too.
+        let known_default_roles: &[&str] = &["admin", "read-only"];
+        for u in &init.users {
+            if u.username.is_empty() {
+                errors.push("initialization.users: empty username".into());
+                continue;
+            }
+            if !user_names.insert(u.username.as_str()) {
+                errors.push(format!(
+                    "initialization.users: duplicate username {:?}",
+                    u.username
+                ));
+            }
+            for role in &u.roles {
+                if !role_names.contains(role.as_str())
+                    && !known_default_roles.contains(&role.as_str())
+                {
+                    errors.push(format!(
+                        "initialization.users.{}: references unknown role {:?}",
+                        u.username, role
+                    ));
+                }
+            }
+        }
+
+        if let Some(ref s) = init.settings {
+            if let Err(sub_errors) = s.validate() {
+                for e in sub_errors {
+                    errors.push(format!("initialization.settings: {}", e));
+                }
+            }
+        }
     }
 
     /// Validate configuration values, returning all errors at once so the user
@@ -439,6 +644,13 @@ impl Config {
             }
         }
 
+        // [initialization] section checks (cross-references, uniqueness,
+        // per-format constraints). Static-only — anything that requires KV
+        // access happens during apply_initialization.
+        if let Some(ref init) = self.initialization {
+            self.validate_initialization(init, &mut errors);
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -473,6 +685,7 @@ impl Default for Config {
             server_secret: None,
             tracing: None,
             worker_threads: 0,
+            initialization: None,
         }
     }
 }
@@ -947,5 +1160,279 @@ mod tests {
         let cfg = load(&path).unwrap();
         assert!(cfg.http.is_none());
         assert!(cfg.tls_enabled());
+    }
+
+    // --- [initialization] section tests ---
+
+    fn write_toml(dir: &tempfile::TempDir, contents: &str) -> std::path::PathBuf {
+        let path = dir.path().join("init.toml");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_load_full_initialization_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_root = dir.path().join("blobs");
+        std::fs::create_dir_all(&blob_root).unwrap();
+        let path = write_toml(
+            &dir,
+            &format!(
+                r#"
+[http]
+listen = "0.0.0.0:8080"
+
+[[initialization.roles]]
+name = "developer"
+description = "rw on hosted-raw"
+capabilities = [
+    {{ capability = "read", repo = "*" }},
+    {{ capability = "write", repo = "hosted-raw" }},
+]
+
+[[initialization.stores]]
+name = "default"
+store_type = "file"
+root = {root:?}
+
+[[initialization.repositories]]
+name = "hosted-raw"
+repo_type = "hosted"
+format = "raw"
+store = "default"
+
+[[initialization.users]]
+username = "ci"
+password = "hunter2"
+roles = ["developer"]
+
+[initialization.settings]
+max_artifact_bytes = 12345
+"#,
+                root = blob_root.to_string_lossy(),
+            ),
+        );
+
+        let cfg = load(&path).unwrap();
+        let init = cfg.initialization.expect("init present");
+        assert_eq!(init.roles.len(), 1);
+        assert_eq!(init.roles[0].name, "developer");
+        assert_eq!(init.stores.len(), 1);
+        assert_eq!(init.stores[0].store_type, "file");
+        assert_eq!(init.repositories.len(), 1);
+        assert_eq!(init.users.len(), 1);
+        assert_eq!(init.users[0].username, "ci");
+        assert_eq!(init.settings.unwrap().max_artifact_bytes, 12345);
+    }
+
+    #[test]
+    fn test_load_without_initialization_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_toml(&dir, "[http]\nlisten = \"0.0.0.0:8080\"\n");
+        let cfg = load(&path).unwrap();
+        assert!(cfg.initialization.is_none());
+    }
+
+    fn cfg_with_init(init: init::InitializationConfig) -> Config {
+        Config {
+            initialization: Some(init),
+            ..Config::default()
+        }
+    }
+
+    fn one_file_store(name: &str) -> crate::server::api::stores::CreateStoreRequest {
+        crate::server::api::stores::CreateStoreRequest {
+            name: name.into(),
+            store_type: "file".into(),
+            root: Some("/tmp/depot-test".into()),
+            sync: false,
+            io_size: 1024,
+            direct_io: false,
+            bucket: None,
+            endpoint: None,
+            region: "us-east-1".into(),
+            prefix: None,
+            access_key: None,
+            secret_key: None,
+            max_retries: 3,
+            connect_timeout_secs: 3,
+            read_timeout_secs: 30,
+            retry_mode: "standard".into(),
+        }
+    }
+
+    fn one_hosted_repo(
+        name: &str,
+        store: &str,
+    ) -> crate::server::api::repositories::CreateRepoRequest {
+        crate::server::api::repositories::CreateRepoRequest {
+            name: name.into(),
+            repo_type: depot_core::store::kv::RepoType::Hosted,
+            format: depot_core::store::kv::ArtifactFormat::Raw,
+            store: store.into(),
+            upstream_url: None,
+            cache_ttl_secs: None,
+            members: None,
+            write_member: None,
+            listen: None,
+            cleanup_max_unaccessed_days: None,
+            cleanup_max_age_days: None,
+            cleanup_untagged_manifests: None,
+            upstream_auth: None,
+            content_disposition: None,
+            repodata_depth: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_init_duplicate_role_name() {
+        let init = init::InitializationConfig {
+            roles: vec![
+                crate::server::api::roles::CreateRoleRequest {
+                    name: "dup".into(),
+                    description: String::new(),
+                    capabilities: vec![],
+                },
+                crate::server::api::roles::CreateRoleRequest {
+                    name: "dup".into(),
+                    description: String::new(),
+                    capabilities: vec![],
+                },
+            ],
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(err.contains("duplicate name \"dup\""), "{err}");
+    }
+
+    #[test]
+    fn test_validate_init_repo_unknown_store() {
+        let init = init::InitializationConfig {
+            repositories: vec![one_hosted_repo("r", "missing")],
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(err.contains("unknown store"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_init_user_unknown_role() {
+        let init = init::InitializationConfig {
+            users: vec![crate::server::api::users::CreateUserRequest {
+                username: "bob".into(),
+                password: "x".into(),
+                roles: vec!["nope".into()],
+                must_change_password: false,
+            }],
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(err.contains("unknown role"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_init_user_default_role_allowed() {
+        // "admin" and "read-only" are created by default-bootstrap, so init
+        // users may reference them without re-declaring.
+        let init = init::InitializationConfig {
+            users: vec![crate::server::api::users::CreateUserRequest {
+                username: "alice".into(),
+                password: "x".into(),
+                roles: vec!["admin".into(), "read-only".into()],
+                must_change_password: false,
+            }],
+            ..init::InitializationConfig::default()
+        };
+        cfg_with_init(init).validate().unwrap();
+    }
+
+    #[test]
+    fn test_validate_init_cache_missing_upstream_url() {
+        let mut repo = one_hosted_repo("c", "default");
+        repo.repo_type = depot_core::store::kv::RepoType::Cache;
+        let init = init::InitializationConfig {
+            stores: vec![one_file_store("default")],
+            repositories: vec![repo],
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(err.contains("cache requires upstream_url"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_init_proxy_missing_members() {
+        let mut repo = one_hosted_repo("p", "default");
+        repo.repo_type = depot_core::store::kv::RepoType::Proxy;
+        let init = init::InitializationConfig {
+            stores: vec![one_file_store("default")],
+            repositories: vec![repo],
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(err.contains("proxy requires non-empty members"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_init_repodata_depth_on_non_yum() {
+        let mut repo = one_hosted_repo("r", "default");
+        repo.repodata_depth = Some(2);
+        let init = init::InitializationConfig {
+            stores: vec![one_file_store("default")],
+            repositories: vec![repo],
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(err.contains("only valid for Yum"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_init_settings_invalid_jwt_expiry() {
+        let init = init::InitializationConfig {
+            settings: Some(settings::Settings {
+                jwt_expiry_secs: 30,
+                ..settings::Settings::default()
+            }),
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(
+            err.contains("initialization.settings: jwt_expiry_secs must be >= 60"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_init_proxy_member_undeclared() {
+        let mut proxy = one_hosted_repo("p", "default");
+        proxy.repo_type = depot_core::store::kv::RepoType::Proxy;
+        proxy.members = Some(vec!["ghost".into()]);
+        let init = init::InitializationConfig {
+            stores: vec![one_file_store("default")],
+            repositories: vec![proxy],
+            ..init::InitializationConfig::default()
+        };
+        let err = cfg_with_init(init).validate().unwrap_err().to_string();
+        assert!(err.contains("proxy member \"ghost\" not declared"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_init_full_passes() {
+        let init = init::InitializationConfig {
+            roles: vec![crate::server::api::roles::CreateRoleRequest {
+                name: "developer".into(),
+                description: String::new(),
+                capabilities: vec![],
+            }],
+            stores: vec![one_file_store("default")],
+            repositories: vec![one_hosted_repo("hosted-raw", "default")],
+            users: vec![crate::server::api::users::CreateUserRequest {
+                username: "ci".into(),
+                password: "x".into(),
+                roles: vec!["developer".into()],
+                must_change_password: false,
+            }],
+            settings: Some(settings::Settings::default()),
+        };
+        cfg_with_init(init).validate().unwrap();
     }
 }
