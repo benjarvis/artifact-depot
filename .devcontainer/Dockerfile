@@ -37,7 +37,7 @@ RUN apt-get -y update && \
 RUN npm install -g @openai/codex && \
     curl -fsSL https://claude.ai/install.sh | bash && \
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0 && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1 && \
     ln -s /root/.cargo/bin/* /usr/local/bin/ && \
     cargo install cargo-deny cargo-about && \
     PIPX_BIN_DIR=/usr/local/bin pipx install reuse
