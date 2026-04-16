@@ -13,7 +13,6 @@
 //! `stream_multipart_field_to_blob`, ...) live in `depot_core::api_helpers`.
 
 pub mod artifacts;
-pub mod audit;
 pub mod auth;
 pub mod backup;
 pub mod nexus_compat;

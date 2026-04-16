@@ -219,23 +219,6 @@ export interface UpdateRoleRequest {
   capabilities?: CapabilityGrant[]
 }
 
-// --- Request event types ---
-
-export interface RequestEvent {
-  id: number
-  timestamp: string
-  username: string
-  ip: string
-  method: string
-  path: string
-  status: number
-  action: string
-  elapsed_ns: number
-  bytes_recv: number
-  bytes_sent: number
-  direction: string
-}
-
 // --- Settings types ---
 
 export interface CorsConfig {
@@ -250,28 +233,8 @@ export interface RateLimitConfig {
   burst_size: number
 }
 
-export interface LoggingS3Config {
-  bucket: string
-  prefix?: string | null
-  region?: string | null
-  endpoint?: string | null
-}
-
-export interface SplunkHecConfig {
-  url: string
-  token: string
-  source?: string
-  sourcetype?: string
-  index?: string | null
-  tls_skip_verify?: boolean
-}
-
 export interface LoggingConfig {
-  capacity?: number
-  file_path?: string | null
   otlp_endpoint?: string | null
-  s3?: LoggingS3Config | null
-  splunk_hec?: SplunkHecConfig | null
 }
 
 export interface Settings {
@@ -698,18 +661,6 @@ export const api = {
       headers: authHeaders(),
     })
     return handleVoidResponse(resp)
-  },
-
-  // --- Logging ---
-
-  async listRequestEvents(params?: { limit?: number }): Promise<RequestEvent[]> {
-    const query = new URLSearchParams()
-    if (params?.limit !== undefined) query.set('limit', String(params.limit))
-    const qs = query.toString()
-    const resp = await fetch(`/api/v1/logging/events${qs ? '?' + qs : ''}`, {
-      headers: authHeaders(),
-    })
-    return handleResponse(resp)
   },
 
   // --- Stores ---

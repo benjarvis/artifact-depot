@@ -276,44 +276,6 @@ async fn test_put_settings() {
 }
 
 // ===========================================================================
-// Audit API
-// ===========================================================================
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_list_audit_events() {
-    let app = TestApp::new().await;
-    let token = app.admin_token();
-
-    // Perform some actions that generate request events.
-    app.create_hosted_repo("audit-test").await;
-
-    let req = app.auth_request(Method::GET, "/api/v1/logging/events", &token);
-    let (status, body) = app.call(req).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array(), "expected array, got: {body}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_audit_events_with_limit() {
-    let app = TestApp::new().await;
-    let token = app.admin_token();
-
-    // Create a few repos to generate events.
-    for i in 0..3 {
-        app.create_hosted_repo(&format!("audit-lim-{i}")).await;
-    }
-
-    let req = app.auth_request(Method::GET, "/api/v1/logging/events?limit=2", &token);
-    let (status, body) = app.call(req).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.is_array(), "expected array, got: {body}");
-    assert!(
-        body.as_array().unwrap().len() <= 2,
-        "should respect limit parameter"
-    );
-}
-
-// ===========================================================================
 // S3 store retry/timeout settings
 // ===========================================================================
 

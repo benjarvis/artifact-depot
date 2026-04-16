@@ -209,9 +209,6 @@ async fn test_app_setup() -> TestAppSetup {
                 depot_server::server::infra::event_bus::MaterializedModel::empty(),
             )),
         },
-        in_memory_log: Arc::new(
-            depot_server::server::infra::log_export::InMemoryLogExporter::new(1000),
-        ),
         settings: Arc::new(SettingsHandle::new(Settings {
             access_log: false,
             ..Settings::default()
