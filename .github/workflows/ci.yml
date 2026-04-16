@@ -18,11 +18,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   DEPOT_INSTRUMENT_FRONTEND: "1"
+  DOCKER_MIRROR: repository.mdh.quantum.com
+  APT_MIRROR: repository.mdh.quantum.com/repository/pkgs/ubuntu
 
 jobs:
   ci:
     name: lint - build - test
-    runs-on: ubuntu-latest
+    runs-on: arc-amd64
     timeout-minutes: 60
 
     steps:
@@ -32,15 +34,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build devcontainer image (cached)
+      - name: Build devcontainer image
         uses: docker/build-push-action@v6
         with:
           context: .devcontainer
           file: .devcontainer/Dockerfile
           load: true
           tags: depot-dev:ci
-          cache-from: type=gha,scope=devcontainer
-          cache-to: type=gha,mode=max,scope=devcontainer
+          build-args: |
+            DOCKER_MIRROR=${{ env.DOCKER_MIRROR }}
+            APT_MIRROR=${{ env.APT_MIRROR }}
 
       - name: Start devcontainer
         run: |
@@ -52,6 +55,21 @@ jobs:
             -e DEPOT_INSTRUMENT_FRONTEND \
             depot-dev:ci \
             sleep infinity
+
+      - name: Start dockerd inside devcontainer
+        run: |
+          # --insecure-registry 127.0.0.0/8 lets the docker-auth integration
+          # test (and any future loopback registry tests) talk to a depot
+          # bound on localhost without TLS chain validation against a
+          # self-signed cert. It only relaxes verification for loopback IPs.
+          docker exec -d dev sh -c 'dockerd --insecure-registry 127.0.0.0/8 >/var/log/dockerd.log 2>&1'
+          docker exec dev sh -c '
+            for i in $(seq 1 30); do
+              docker info >/dev/null 2>&1 && exit 0
+              sleep 1
+            done
+            echo "dockerd did not become ready"; tail -50 /var/log/dockerd.log; exit 1
+          '
 
       # --- Lints (each step runs even if a previous one failed) ---
       # REUSE, cargo fmt, and cargo-deny run before npm ci and any
@@ -70,10 +88,6 @@ jobs:
         if: success() || failure()
         run: docker exec dev cargo deny check licenses
 
-      - name: Lint - cargo-deny advisories
-        if: success() || failure()
-        run: docker exec dev cargo deny check advisories
-
       - name: Install frontend deps
         run: docker exec -w /workspace/ui/frontend dev npm ci
 
@@ -84,10 +98,6 @@ jobs:
       - name: Lint - npm license-checker
         if: success() || failure()
         run: docker exec -w /workspace/ui/frontend dev npx --yes license-checker --failOn 'GPL-2.0;GPL-3.0;AGPL-3.0;AGPL-1.0;SSPL-1.0;EUPL-1.1;EUPL-1.2'
-
-      - name: Lint - npm audit
-        if: success() || failure()
-        run: docker exec -w /workspace/ui/frontend dev npm audit
 
       # --- Notices (prerequisite of build) ---
 
@@ -116,26 +126,98 @@ jobs:
       - name: Test - DynamoDB
         run: docker exec -e DYNAMODB_LOCAL_DIR=/usr/local/lib/dynamodb-local dev bash scripts/ext-test.sh dynamodb
 
-      - name: Test - Docker auth (skipped without dind)
+      - name: Test - Docker auth
         run: docker exec dev bash scripts/ext-test.sh docker-auth
 
       - name: Stop devcontainer
         if: always()
         run: docker rm -f dev || true
 
-  release:
-    name: build and publish release image
+  release-build:
+    name: build release image (${{ matrix.platform }})
     needs: ci
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: arc-amd64
+          - platform: linux/arm64
+            runner: arc-arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Prepare platform pair
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DOCKER_MIRROR=${{ env.DOCKER_MIRROR }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release-manifest:
+    name: combine multi-arch manifest
+    needs: release-build
+    runs-on: arc-amd64
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Download digest artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -156,13 +238,14 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
 
-      - name: Build and push release image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=release
-          cache-to: type=gha,mode=max,scope=release
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect \
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}

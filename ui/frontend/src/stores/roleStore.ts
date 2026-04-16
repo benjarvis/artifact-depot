@@ -21,9 +21,13 @@ export const useRoleStore = defineStore('roles', () => {
 
   function applyEvent(event: string, payload: any) {
     switch (event) {
-      case 'role_created':
-        roles.value.push(payload.role ?? payload)
+      case 'role_created': {
+        const role = payload.role ?? payload
+        if (!roles.value.some(r => r.name === role.name)) {
+          roles.value.push(role)
+        }
         break
+      }
       case 'role_updated': {
         const role = payload.role ?? payload
         const idx = roles.value.findIndex(r => r.name === role.name)

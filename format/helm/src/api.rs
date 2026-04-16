@@ -619,10 +619,10 @@ fn has_expired_cache_member<'a>(
                         None => return true, // No cached index at all.
                     }
                 }
-                RepoKind::Proxy { .. } => {
-                    if has_expired_cache_member(state, &member_config, depth + 1).await {
-                        return true;
-                    }
+                RepoKind::Proxy { .. }
+                    if has_expired_cache_member(state, &member_config, depth + 1).await =>
+                {
+                    return true;
                 }
                 _ => {}
             }

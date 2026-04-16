@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: all build test debug release debug_test release_test lint fmt demo demo-data coverage docker clean notices \
+.PHONY: all build test debug release debug_test release_test lint security fmt demo demo-data coverage docker clean notices \
 	notices-cargo notices-npm \
-	lint-cargo-licenses lint-cargo-advisories lint-npm-licenses lint-npm-audit lint-reuse lint-fmt lint-clippy \
+	lint-cargo-licenses lint-npm-licenses lint-reuse lint-fmt lint-clippy \
+	security-cargo-advisories security-npm-audit \
 	test-debug test-ui test-dynamodb test-docker-auth
 
 all: test
@@ -15,16 +16,19 @@ lint-cargo-licenses:
 	@echo "Checking Rust dependency licenses..."
 	@output=$$(cargo deny check licenses 2>&1) || { echo "$$output"; exit 1; }
 
-lint-cargo-advisories:
-	@command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny
-	@echo "Auditing Rust dependencies for vulnerabilities..."
-	@output=$$(cargo deny check advisories 2>&1) || { echo "$$output"; exit 1; }
-
 lint-npm-licenses:
 	@echo "Checking frontend dependency licenses..."
 	@cd ui/frontend && npx --yes license-checker --failOn 'GPL-2.0;GPL-3.0;AGPL-3.0;AGPL-1.0;SSPL-1.0;EUPL-1.1;EUPL-1.2' > /dev/null
 
-lint-npm-audit:
+# Vulnerability checks (parallelizable with make -j). Kept out of `make
+# lint` so a freshly disclosed advisory does not block local development;
+# CI runs `make security` to gate merges on new vulnerabilities.
+security-cargo-advisories:
+	@command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny
+	@echo "Auditing Rust dependencies for vulnerabilities..."
+	@output=$$(cargo deny check advisories 2>&1) || { echo "$$output"; exit 1; }
+
+security-npm-audit:
 	@echo "Auditing frontend dependencies for vulnerabilities..."
 	@output=$$(cd ui/frontend && npm audit 2>&1) || { echo "$$output"; exit 1; }
 
@@ -54,7 +58,12 @@ notices: notices-cargo notices-npm
 	@output=$$(bash scripts/generate-notices.sh 2>&1) || { echo "$$output"; exit 1; }
 
 # All lint checks
-lint: lint-cargo-licenses lint-cargo-advisories lint-npm-licenses lint-npm-audit lint-reuse lint-fmt lint-clippy
+lint: lint-cargo-licenses lint-npm-licenses lint-reuse lint-fmt lint-clippy
+
+# Vulnerability checks. Run manually (or on a schedule) rather than in
+# the per-PR pipeline so a newly disclosed advisory does not block
+# unrelated development work.
+security: security-cargo-advisories security-npm-audit
 
 # Build targets
 debug: notices

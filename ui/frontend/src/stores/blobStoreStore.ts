@@ -21,9 +21,13 @@ export const useBlobStoreStore = defineStore('blobStores', () => {
 
   function applyEvent(event: string, payload: any) {
     switch (event) {
-      case 'store_created':
-        stores.value.push(payload.store ?? payload)
+      case 'store_created': {
+        const store = payload.store ?? payload
+        if (!stores.value.some(s => s.name === store.name)) {
+          stores.value.push(store)
+        }
         break
+      }
       case 'store_updated': {
         const store = payload.store ?? payload
         const idx = stores.value.findIndex(s => s.name === store.name)

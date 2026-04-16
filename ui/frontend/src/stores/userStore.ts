@@ -21,9 +21,13 @@ export const useUserStore = defineStore('users', () => {
 
   function applyEvent(event: string, payload: any) {
     switch (event) {
-      case 'user_created':
-        users.value.push(payload.user ?? payload)
+      case 'user_created': {
+        const user = payload.user ?? payload
+        if (!users.value.some(u => u.username === user.username)) {
+          users.value.push(user)
+        }
         break
+      }
       case 'user_updated': {
         const user = payload.user ?? payload
         const idx = users.value.findIndex(u => u.username === user.username)
