@@ -1,0 +1,18 @@
+# Default configuration shipped inside the Docker image.
+# Override by mounting your own file at /etc/depot/depotd.toml.
+
+[http]
+listen = "0.0.0.0:8080"
+
+[kv_store]
+type = "redb"
+path = "/data/kv"
+
+# On first start the default blob store is created automatically.
+# Create repositories via the UI or REST API once the server is running.
+[initialization]
+
+[[initialization.stores]]
+name = "default"
+store_type = "file"
+root = "/data/blobs"

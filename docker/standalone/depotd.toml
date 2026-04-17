@@ -16,3 +16,11 @@ path = "/data/kv"
 # otlp_endpoint = "http://otel-collector:4317"
 # service_name = "depot"
 # deployment_environment = "dev"
+
+# Default blob store is auto-created on first start.
+[initialization]
+
+[[initialization.stores]]
+name = "default"
+store_type = "file"
+root = "/data/blobs"

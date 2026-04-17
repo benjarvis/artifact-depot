@@ -33,6 +33,10 @@ RUN RUST_TARGET=$(cat /rust-target) \
     && cargo build --release --features dynamodb --bin depot --target "$RUST_TARGET" \
     && cp "target/$RUST_TARGET/release/depot" /depot
 
+# Pre-create the /data layout so the runtime stage has directories owned
+# by the unprivileged user (scratch has no mkdir/chown).
+RUN mkdir -p /data-layout/kv /data-layout/blobs
+
 # --- Runtime stage ---
 FROM scratch
 
@@ -43,6 +47,8 @@ LABEL org.opencontainers.image.title="Artifact Depot" \
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /depot /depot
+COPY --from=builder --chown=65534:65534 /src/docker/depotd.toml /etc/depot/depotd.toml
+COPY --from=builder --chown=65534:65534 /data-layout/ /data/
 
 USER 65534:65534
 EXPOSE 8080
