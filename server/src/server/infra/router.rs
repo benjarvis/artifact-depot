@@ -13,7 +13,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::server::api::{
-    artifacts, audit as api_logging, auth as api_auth, backup, nexus_compat, repositories, roles,
+    artifacts, auth as api_auth, backup, nexus_compat, repositories, roles,
     settings as api_settings, stores, system, tasks, users,
 };
 use crate::server::infra::event_stream;
@@ -84,8 +84,6 @@ use depot_format_yum::api as yum;
         // Backup & Restore
         backup::get_backup,
         backup::post_restore,
-        // Logging
-        api_logging::list_request_events,
         // Tasks
         tasks::start_check,
         tasks::start_gc,
@@ -131,14 +129,10 @@ use depot_format_yum::api as yum;
         // Settings
         crate::server::config::settings::Settings,
         crate::server::config::settings::LoggingSettingsConfig,
-        crate::server::config::settings::S3LogSettingsConfig,
-        crate::server::config::settings::SplunkHecSettingsConfig,
         crate::server::config::CorsConfig,
         crate::server::config::RateLimitConfig,
         // Backup
         backup::RestoreSummary,
-        // Logging
-        crate::server::infra::log_export::RequestEvent,
         // Shared enums
         depot_core::store::kv::RepoType,
         depot_core::store::kv::ArtifactFormat,
@@ -171,7 +165,6 @@ use depot_format_yum::api as yum;
         (name = "stores", description = "Blob store management"),
         (name = "settings", description = "Cluster-wide settings"),
         (name = "backup", description = "Backup and restore"),
-        (name = "logging", description = "Request event logging"),
         (name = "tasks", description = "Background task management"),
         (name = "streaming", description = "Real-time SSE event streams"),
     )
@@ -308,11 +301,6 @@ pub fn build_router(state: AppState, metrics_handle: Option<PrometheusHandle>) -
         .route(
             "/api/v1/tasks/{id}",
             get(tasks::get_task).delete(tasks::delete_task),
-        )
-        // Audit
-        .route(
-            "/api/v1/logging/events",
-            get(api_logging::list_request_events),
         )
         // Model event stream (real-time data model for the UI)
         .route("/api/v1/events/stream", get(event_stream::event_stream))

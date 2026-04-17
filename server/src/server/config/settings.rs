@@ -83,53 +83,13 @@ pub struct Settings {
 }
 
 /// Logging endpoint configuration stored in dynamic settings.
-/// Mirrors the fields from `LoggingConfig` in the static TOML config.
-/// Changes take effect after restart.
+/// Mirrors `LoggingConfig` in the static TOML config. Changes take effect
+/// after restart. Unknown keys in older KV records (capacity, file_path,
+/// s3, splunk_hec) are silently ignored so upgrades don't break.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct LoggingSettingsConfig {
     #[serde(default)]
-    pub capacity: Option<usize>,
-    #[serde(default)]
-    pub file_path: Option<String>,
-    #[serde(default)]
     pub otlp_endpoint: Option<String>,
-    #[serde(default)]
-    pub s3: Option<S3LogSettingsConfig>,
-    #[serde(default)]
-    pub splunk_hec: Option<SplunkHecSettingsConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-pub struct S3LogSettingsConfig {
-    pub bucket: String,
-    #[serde(default)]
-    pub prefix: Option<String>,
-    #[serde(default)]
-    pub region: Option<String>,
-    #[serde(default)]
-    pub endpoint: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-pub struct SplunkHecSettingsConfig {
-    pub url: String,
-    pub token: String,
-    #[serde(default = "default_splunk_source")]
-    pub source: String,
-    #[serde(default = "default_splunk_sourcetype")]
-    pub sourcetype: String,
-    #[serde(default)]
-    pub index: Option<String>,
-    #[serde(default)]
-    pub tls_skip_verify: bool,
-}
-
-fn default_splunk_source() -> String {
-    "depot".to_string()
-}
-
-fn default_splunk_sourcetype() -> String {
-    "depot:log".to_string()
 }
 
 fn default_gc_interval_secs() -> Option<u64> {
@@ -456,5 +416,60 @@ mod tests {
         let bytes = rmp_serde::to_vec(&s).unwrap();
         let s2: Settings = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn test_legacy_logging_settings_deserialize() {
+        // Replicates a persisted settings blob from an older build that carried
+        // capacity/file_path/s3/splunk_hec. Real records are encoded with
+        // rmp_serde::to_vec_named via service::typed_put, so the forward-compat
+        // path relies on msgpack named-map deserialization ignoring extras.
+        #[derive(Serialize)]
+        struct LegacyS3 {
+            bucket: String,
+            prefix: Option<String>,
+            region: Option<String>,
+            endpoint: Option<String>,
+        }
+        #[derive(Serialize)]
+        struct LegacySplunk {
+            url: String,
+            token: String,
+            source: String,
+            sourcetype: String,
+            index: Option<String>,
+            tls_skip_verify: bool,
+        }
+        #[derive(Serialize)]
+        struct LegacyLogging {
+            capacity: Option<usize>,
+            file_path: Option<String>,
+            otlp_endpoint: Option<String>,
+            s3: Option<LegacyS3>,
+            splunk_hec: Option<LegacySplunk>,
+        }
+
+        let legacy = LegacyLogging {
+            capacity: Some(500),
+            file_path: Some("/var/log/depot.log".to_string()),
+            otlp_endpoint: Some("http://loki:3100/otlp".to_string()),
+            s3: Some(LegacyS3 {
+                bucket: "my-bucket".to_string(),
+                prefix: Some("logs/".to_string()),
+                region: Some("us-east-1".to_string()),
+                endpoint: None,
+            }),
+            splunk_hec: Some(LegacySplunk {
+                url: "https://splunk.example.com:8088".to_string(),
+                token: "xxx".to_string(),
+                source: "depot".to_string(),
+                sourcetype: "depot:log".to_string(),
+                index: None,
+                tls_skip_verify: false,
+            }),
+        };
+        let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
+        let cfg: LoggingSettingsConfig = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(cfg.otlp_endpoint.as_deref(), Some("http://loki:3100/otlp"));
     }
 }

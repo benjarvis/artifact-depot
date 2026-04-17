@@ -46,19 +46,13 @@ path = "/var/lib/depot/depot.redb"
 # read_timeout_secs = 10                 # Per-request read timeout (default: 10)
 # retry_mode = "standard"                # "standard" or "adaptive" (default: "standard")
 
-# -- Audit ----------------------------------------------------------
-[audit]
-capacity = 1000                          # In-memory ring buffer size (default: 1000)
-file_path = "/var/log/depot/audit.jsonl" # Optional file backend (JSON lines)
-
-# Optional Splunk HEC integration
-[audit.splunk_hec]
-url = "https://splunk.example.com:8088"
-token = "your-hec-token"
-source = "depot"                         # Default: "depot"
-sourcetype = "depot:audit"               # Default: "depot:audit"
-index = "depot_audit"                    # Optional
-tls_skip_verify = false                  # Default: false
+# -- Logging --------------------------------------------------------
+# Application logs and per-request events are written to stdout and, when
+# configured, exported over OTLP. Run an OpenTelemetry collector in front
+# of Depot if you need file, Splunk, or S3 destinations -- the collector
+# handles batching, retries, and credentials better than any in-tree sink.
+[logging]
+otlp_endpoint = "http://otelcol:4318"    # OTLP logs endpoint (optional)
 
 # -- Metrics --------------------------------------------------------
 metrics_listen = "127.0.0.1:9090"        # Optional dedicated Prometheus metrics listener
@@ -113,23 +107,15 @@ Requires the `dynamodb` feature flag at compile time.
 | `region` | string | `"us-east-1"` | AWS region |
 | `endpoint_url` | string | _(none)_ | Override for DynamoDB Local, ScyllaDB Alternator, etc. |
 
-### `[audit]`
+### `[logging]`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `capacity` | integer | `1000` | In-memory audit event ring buffer size |
-| `file_path` | path | _(none)_ | Append audit events as JSON lines to this file |
+| `otlp_endpoint` | string | _(none)_ | OTLP logs endpoint (e.g. `http://otelcol:4318` or `http://loki:3100/otlp`) |
 
-### `[audit.splunk_hec]`
+Depot always writes application logs to stdout. The per-request event target (`depot.request`) is filtered out of stdout and, when `otlp_endpoint` is set, exported to an OpenTelemetry collector alongside the application logs. Route the OTLP stream through a collector for file, Splunk, S3, or any other destination.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `url` | string | **required** | Splunk HEC endpoint URL |
-| `token` | string | **required** | HEC authentication token |
-| `source` | string | `"depot"` | Event source field |
-| `sourcetype` | string | `"depot:audit"` | Event sourcetype field |
-| `index` | string | _(none)_ | Optional Splunk index override |
-| `tls_skip_verify` | bool | `false` | Skip TLS certificate verification |
+Legacy `capacity`, `file_path`, `splunk_hec`, and `s3` keys under `[logging]` (or the old `[audit]` section) are silently ignored on startup with a warning; migrate those destinations to your OTel collector config.
 
 ### `[ldap]`
 

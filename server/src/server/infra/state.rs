@@ -13,7 +13,6 @@ use crate::server::auth::JwtSecretState;
 use crate::server::config::settings::SettingsHandle;
 use crate::server::config::{Config, KvStoreConfig};
 use crate::server::infra::event_bus::{EventBus, MaterializedModel, ModelHandle};
-use crate::server::infra::log_export::InMemoryLogExporter;
 use crate::server::infra::rate_limit::DynamicRateLimiter;
 use crate::server::infra::store_registry::instantiate_store;
 use crate::server::infra::task::TaskManager;
@@ -180,7 +179,6 @@ pub struct AppState {
     pub repo: RepoServices,
     pub auth: AuthServices,
     pub bg: BackgroundServices,
-    pub in_memory_log: Arc<InMemoryLogExporter>,
     pub settings: Arc<SettingsHandle>,
     pub rate_limiter: Arc<DynamicRateLimiter>,
 }
@@ -267,8 +265,6 @@ impl AppState {
         #[cfg(not(feature = "ldap"))]
         let auth = init_auth(kv.clone()).await?;
 
-        let in_memory_log = Arc::new(InMemoryLogExporter::new(cfg.logging.capacity));
-
         let settings = crate::server::config::settings::ensure_settings(kv.as_ref()).await?;
         let rate_limiter = Arc::new(DynamicRateLimiter::new(settings.rate_limit.as_ref()));
 
@@ -305,7 +301,6 @@ impl AppState {
                 event_bus,
                 model: Arc::new(ModelHandle::new(MaterializedModel::empty())),
             },
-            in_memory_log,
             settings: Arc::new(SettingsHandle::new(settings)),
             rate_limiter,
         })

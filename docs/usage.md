@@ -76,7 +76,7 @@ depot-bench bench --url http://localhost:8080 --scenario raw-mixed --concurrency
 
 Interactive API documentation is available at `/swagger-ui/` (requires authentication). The OpenAPI spec is served at `/api-docs/openapi.json`.
 
-The REST API covers repositories, artifacts, users, roles, blob stores, cluster settings, audit events, and background tasks.
+The REST API covers repositories, artifacts, users, roles, blob stores, cluster settings, and background tasks.
 
 ## Supported Formats
 

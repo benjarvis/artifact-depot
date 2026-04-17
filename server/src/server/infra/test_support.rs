@@ -16,7 +16,6 @@ use tokio::task::JoinHandle;
 use crate::server::auth::backend::{AuthBackend, BuiltinAuthBackend, CachedAuthBackend};
 use crate::server::config::settings::{Settings, SettingsHandle};
 use crate::server::config::{Config, HttpConfig, KvStoreConfig};
-use crate::server::infra::log_export::InMemoryLogExporter;
 use crate::server::infra::rate_limit::DynamicRateLimiter;
 use crate::server::infra::router::build_router;
 use crate::server::infra::state::{AppState, AuthServices, BackgroundServices, RepoServices};
@@ -208,7 +207,6 @@ impl TestServer {
                     crate::server::infra::event_bus::MaterializedModel::empty(),
                 )),
             },
-            in_memory_log: Arc::new(InMemoryLogExporter::new(1000)),
             settings: Arc::new(SettingsHandle::new(Settings {
                 access_log: false,
                 ..Settings::default()

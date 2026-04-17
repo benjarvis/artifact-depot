@@ -150,9 +150,6 @@ async fn app_with_cors(cors: Option<CorsConfig>) -> axum::Router {
                 crate::server::infra::event_bus::MaterializedModel::empty(),
             )),
         },
-        in_memory_log: Arc::new(crate::server::infra::log_export::InMemoryLogExporter::new(
-            1000,
-        )),
         settings: Arc::new(SettingsHandle::new(Settings {
             access_log: false,
             cors,

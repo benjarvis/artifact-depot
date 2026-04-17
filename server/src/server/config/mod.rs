@@ -10,61 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SplunkHecConfig {
-    /// Splunk HEC endpoint URL (e.g. "https://splunk.example.com:8088")
-    pub url: String,
-    /// HEC authentication token.
-    pub token: String,
-    /// Event source field. Default: "depot"
-    #[serde(default = "default_splunk_source")]
-    pub source: String,
-    /// Event sourcetype field. Default: "depot:log"
-    #[serde(default = "default_splunk_sourcetype")]
-    pub sourcetype: String,
-    /// Optional Splunk index override.
-    #[serde(default)]
-    pub index: Option<String>,
-    /// Skip TLS certificate verification (for self-signed certs).
-    #[serde(default)]
-    pub tls_skip_verify: bool,
-}
-
-fn default_splunk_source() -> String {
-    "depot".to_string()
-}
-
-fn default_splunk_sourcetype() -> String {
-    "depot:log".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LoggingConfig {
-    #[serde(default = "default_logging_capacity")]
-    pub capacity: usize,
-    #[serde(default)]
-    pub file_path: Option<PathBuf>,
-    /// Optional Splunk HEC integration.
-    #[serde(default)]
-    pub splunk_hec: Option<SplunkHecConfig>,
     /// OTLP endpoint for log export (e.g. Loki "http://loki:3100/otlp").
+    /// Operators wanting file, Splunk, or S3 archival should run an
+    /// OpenTelemetry collector and configure it on top of this endpoint.
     #[serde(default)]
     pub otlp_endpoint: Option<String>,
-}
-
-fn default_logging_capacity() -> usize {
-    1000
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            capacity: default_logging_capacity(),
-            file_path: None,
-            splunk_hec: None,
-            otlp_endpoint: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,16 +439,6 @@ impl Config {
             }
         }
 
-        // Splunk HEC config checks
-        if let Some(ref hec) = self.logging.splunk_hec {
-            if hec.url.is_empty() {
-                errors.push("logging.splunk_hec.url must not be empty".to_string());
-            }
-            if hec.token.is_empty() {
-                errors.push("logging.splunk_hec.token must not be empty".to_string());
-            }
-        }
-
         if errors.is_empty() {
             Ok(())
         } else {
@@ -538,6 +480,7 @@ impl Default for Config {
 pub fn load(path: &Path) -> anyhow::Result<Config> {
     if path.exists() {
         let text = std::fs::read_to_string(path)?;
+        warn_on_removed_logging_keys(&text);
         let mut cfg: Config = toml::from_str(&text)?;
         // When neither [http] nor [https] is specified, default to plain HTTP.
         if cfg.http.is_none() && cfg.https.is_none() {
@@ -553,6 +496,33 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
             path.display()
         );
         Ok(Config::default())
+    }
+}
+
+/// Detect `[logging]` (or legacy `[audit]`) keys removed in the stdout+OTLP-only
+/// overhaul and warn the operator that those sinks now live in the OTel collector.
+fn warn_on_removed_logging_keys(text: &str) {
+    const REMOVED: &[&str] = &["capacity", "file_path", "splunk_hec"];
+    let Ok(doc) = text.parse::<toml::Value>() else {
+        return;
+    };
+    for section in ["logging", "audit"] {
+        let Some(table) = doc.get(section).and_then(|v| v.as_table()) else {
+            continue;
+        };
+        let present: Vec<&str> = REMOVED
+            .iter()
+            .copied()
+            .filter(|k| table.contains_key(*k))
+            .collect();
+        if !present.is_empty() {
+            tracing::warn!(
+                "[{section}] keys {:?} are no longer supported and will be ignored. \
+                 Route logs through an OpenTelemetry collector (otlp_endpoint) \
+                 to reach file, Splunk, or S3 destinations.",
+                present
+            );
+        }
     }
 }
 
@@ -781,78 +751,28 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_splunk_hec_empty_url() {
-        let mut cfg = Config::default();
-        cfg.logging.splunk_hec = Some(SplunkHecConfig {
-            url: "".to_string(),
-            token: "my-token".to_string(),
-            source: "depot".to_string(),
-            sourcetype: "depot:log".to_string(),
-            index: None,
-            tls_skip_verify: false,
-        });
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(
-            err.contains("logging.splunk_hec.url must not be empty"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn test_validate_splunk_hec_empty_token() {
-        let mut cfg = Config::default();
-        cfg.logging.splunk_hec = Some(SplunkHecConfig {
-            url: "https://splunk.example.com:8088".to_string(),
-            token: "".to_string(),
-            source: "depot".to_string(),
-            sourcetype: "depot:log".to_string(),
-            index: None,
-            tls_skip_verify: false,
-        });
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(
-            err.contains("logging.splunk_hec.token must not be empty"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn test_validate_splunk_hec_valid() {
-        let mut cfg = Config::default();
-        cfg.logging.splunk_hec = Some(SplunkHecConfig {
-            url: "https://splunk.example.com:8088".to_string(),
-            token: "my-token".to_string(),
-            source: "depot".to_string(),
-            sourcetype: "depot:log".to_string(),
-            index: Some("depot_logs".to_string()),
-            tls_skip_verify: false,
-        });
-        cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn test_splunk_hec_toml_deserialization() {
+    fn test_legacy_logging_keys_are_ignored() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.toml");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "[http]").unwrap();
         writeln!(f, r#"listen = "0.0.0.0:8080""#).unwrap();
         writeln!(f).unwrap();
-        // Use the old [audit] key to test backward compat alias.
-        writeln!(f, "[audit.splunk_hec]").unwrap();
+        writeln!(f, "[logging]").unwrap();
+        writeln!(f, "capacity = 500").unwrap();
+        writeln!(f, r#"file_path = "/var/log/depot.log""#).unwrap();
+        writeln!(f, r#"otlp_endpoint = "http://loki:3100/otlp""#).unwrap();
+        writeln!(f).unwrap();
+        writeln!(f, "[logging.splunk_hec]").unwrap();
         writeln!(f, r#"url = "https://splunk.example.com:8088""#).unwrap();
         writeln!(f, r#"token = "test-token-123""#).unwrap();
-        writeln!(f, r#"index = "my_index""#).unwrap();
         drop(f);
 
         let cfg = load(&path).unwrap();
-        let hec = cfg.logging.splunk_hec.unwrap();
-        assert_eq!(hec.url, "https://splunk.example.com:8088");
-        assert_eq!(hec.token, "test-token-123");
-        assert_eq!(hec.source, "depot"); // default
-        assert_eq!(hec.sourcetype, "depot:log"); // default
-        assert_eq!(hec.index.as_deref(), Some("my_index"));
-        assert!(!hec.tls_skip_verify);
+        assert_eq!(
+            cfg.logging.otlp_endpoint.as_deref(),
+            Some("http://loki:3100/otlp")
+        );
     }
 
     #[cfg(feature = "dynamodb")]

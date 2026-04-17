@@ -30,7 +30,7 @@
                      |              API Layer                       |
                      |                                              |
                      |  repositories  artifacts  docker  auth       |
-                     |  users  roles  stores  settings  audit       |
+                     |  users  roles  stores  settings              |
                      |  tasks  system                               |
                      |  pypi  apt  yum  npm  cargo  helm  golang    |
                      +--------------------+------------------------+
@@ -172,15 +172,14 @@ The blob reaper runs periodically (default: every 24 hours, configurable via the
 
 The two-pass grace period (one full GC interval) prevents races with in-flight ingestions that have written a blob but not yet committed the KV record. Docker artifacts younger than 1 hour are additionally immune to GC, since manifest/blob/tag creation involves multiple non-atomic KV writes.
 
-## Audit Logging
+## Logging
 
-All HTTP requests and mutations are captured as audit events. Three backends are composable:
+Application logs and per-request events are emitted in two places:
 
-- **In-memory ring buffer** (default, capacity configurable via `[audit].capacity` in TOML)
-- **File** -- append JSON lines to a file (`[audit].file_path` in TOML)
-- **Splunk HEC** -- forward events to a Splunk HTTP Event Collector (`[audit.splunk_hec]` in TOML)
+- **stdout** -- standard `tracing` output. The per-request `depot.request` target is filtered out of stdout so only application logs land here.
+- **OTLP** -- when `[logging].otlp_endpoint` is set, both application logs and per-request events are exported to an OpenTelemetry collector via the tracing bridge. Each per-request event carries `request_id`, `username`, `ip`, `method`, `path`, `status`, `action`, `elapsed_ns`, `bytes_recv`, `bytes_sent`, `direction`, and a `trace_id` when the current span is sampled.
 
-Events are queryable via `GET /api/v1/audit/events`.
+For file, Splunk, or S3 archival, run an OpenTelemetry collector and point Depot's OTLP exporter at it. The collector's `splunkhec`, `awss3`, and `file` exporters handle batching, retries, and credentials. The bundled Grafana/Tempo/Loki compose stack demonstrates this topology.
 
 ## Metrics
 

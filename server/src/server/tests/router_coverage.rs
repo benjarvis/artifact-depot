@@ -183,9 +183,6 @@ async fn test_router_with_default_docker_repo() {
                 crate::server::infra::event_bus::MaterializedModel::empty(),
             )),
         },
-        in_memory_log: Arc::new(crate::server::infra::log_export::InMemoryLogExporter::new(
-            1000,
-        )),
         settings: Arc::new(SettingsHandle::new(Settings {
             access_log: false,
             default_docker_repo: Some("default-docker".to_string()),
@@ -336,9 +333,6 @@ async fn test_router_with_access_log() {
                 crate::server::infra::event_bus::MaterializedModel::empty(),
             )),
         },
-        in_memory_log: Arc::new(crate::server::infra::log_export::InMemoryLogExporter::new(
-            1000,
-        )),
         settings: Arc::new(SettingsHandle::new(Settings {
             access_log: true,
             ..Settings::default()
@@ -493,8 +487,6 @@ const MANAGEMENT_ROUTES: &[(&str, &[&str])] = &[
     // Backup & Restore
     ("/api/v1/backup", &["get"]),
     ("/api/v1/restore", &["post"]),
-    // Logging
-    ("/api/v1/logging/events", &["get"]),
     // Tasks
     ("/api/v1/tasks", &["get"]),
     ("/api/v1/tasks/check", &["post"]),

@@ -4,7 +4,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { api, type Settings, type CorsConfig, type RateLimitConfig, type LoggingS3Config, type SplunkHecConfig } from '../api'
+import { api, type Settings, type CorsConfig, type RateLimitConfig } from '../api'
 import { useSettingsStore } from '../stores/settingsStore'
 
 const settingsStore = useSettingsStore()
@@ -44,12 +44,6 @@ const gcMinIntervalMinutes = ref(60)
 
 // Logging endpoints
 const loggingOtlpEndpoint = ref('')
-const loggingFilePath = ref('')
-const loggingS3Enabled = ref(false)
-const loggingS3 = ref<LoggingS3Config>({ bucket: '', prefix: null, region: null, endpoint: null })
-const splunkHecEnabled = ref(false)
-const splunkHec = ref<SplunkHecConfig>({ url: '', token: '', source: undefined, sourcetype: undefined, index: null, tls_skip_verify: false })
-const loggingCapacity = ref(4096)
 
 // Tracing
 const tracingEndpoint = ref('')
@@ -76,18 +70,7 @@ function loadProxies(s: Settings) {
   gcIntervalHours.value = (s.gc_interval_secs ?? 86400) / 3600
   gcMinIntervalMinutes.value = (s.gc_min_interval_secs ?? 3600) / 60
   // Logging endpoints
-  const lg = s.logging
-  loggingOtlpEndpoint.value = lg?.otlp_endpoint ?? ''
-  loggingFilePath.value = lg?.file_path ?? ''
-  loggingCapacity.value = lg?.capacity ?? 4096
-  loggingS3Enabled.value = lg?.s3 != null
-  if (lg?.s3) {
-    loggingS3.value = { ...lg.s3 }
-  }
-  splunkHecEnabled.value = lg?.splunk_hec != null
-  if (lg?.splunk_hec) {
-    splunkHec.value = { ...lg.splunk_hec }
-  }
+  loggingOtlpEndpoint.value = s.logging?.otlp_endpoint ?? ''
   tracingEndpoint.value = s.tracing_endpoint ?? ''
 }
 
@@ -108,11 +91,7 @@ function buildSettings(): Settings {
     jwt_expiry_secs: settings.value.jwt_expiry_secs,
     jwt_rotation_interval_secs: settings.value.jwt_rotation_interval_secs,
     logging: {
-      capacity: loggingCapacity.value,
-      file_path: loggingFilePath.value || null,
       otlp_endpoint: loggingOtlpEndpoint.value || null,
-      s3: loggingS3Enabled.value ? { ...loggingS3.value } : null,
-      splunk_hec: splunkHecEnabled.value ? { ...splunkHec.value } : null,
     },
     tracing_endpoint: tracingEndpoint.value || null,
   }
@@ -269,75 +248,14 @@ async function save() {
       <details class="settings-section">
         <summary>Logging Endpoints <span class="badge-restart">restart</span></summary>
         <div class="settings-section-body">
+          <p class="hint">
+            Depot emits logs to stdout and, when configured, to an OpenTelemetry collector via OTLP.
+            Route the OTLP stream through an OTel collector to deliver logs to Loki, Splunk, S3, or files.
+          </p>
           <label class="field-row">
-            <span>Ring buffer capacity</span>
-            <input type="number" v-model.number="loggingCapacity" min="64" step="64" class="input-sm" />
-            <span class="hint">In-memory event buffer size</span>
-          </label>
-          <label class="field-row">
-            <span>OTLP Endpoint (e.g. http://loki:3100/otlp)</span>
+            <span>OTLP Endpoint</span>
             <input type="text" v-model="loggingOtlpEndpoint" placeholder="http://loki:3100/otlp" class="input-lg" />
           </label>
-          <label class="field-row">
-            <span>Log File Path (JSONL)</span>
-            <input type="text" v-model="loggingFilePath" placeholder="/var/log/depot/requests.jsonl" class="input-lg" />
-          </label>
-          <!-- S3 -->
-          <label class="checkbox-group">
-            <input type="checkbox" v-model="loggingS3Enabled" />
-            <span>S3 log export</span>
-            <span class="hint">Write JSONL batches to an S3 bucket</span>
-          </label>
-          <template v-if="loggingS3Enabled">
-            <label class="field-row">
-              <span>Bucket</span>
-              <input type="text" v-model="loggingS3.bucket" placeholder="my-log-bucket" class="input-md" />
-            </label>
-            <label class="field-row">
-              <span>Prefix</span>
-              <input type="text" v-model="loggingS3.prefix" placeholder="depot/logs/" class="input-md" />
-            </label>
-            <label class="field-row">
-              <span>Region</span>
-              <input type="text" v-model="loggingS3.region" placeholder="us-east-1" class="input-md" />
-            </label>
-            <label class="field-row">
-              <span>Endpoint</span>
-              <input type="text" v-model="loggingS3.endpoint" placeholder="https://s3.amazonaws.com" class="input-lg" />
-            </label>
-          </template>
-          <!-- Splunk HEC -->
-          <label class="checkbox-group">
-            <input type="checkbox" v-model="splunkHecEnabled" />
-            <span>Splunk HEC</span>
-            <span class="hint">Send events to Splunk HTTP Event Collector</span>
-          </label>
-          <template v-if="splunkHecEnabled">
-            <label class="field-row">
-              <span>URL</span>
-              <input type="text" v-model="splunkHec.url" placeholder="https://splunk:8088/services/collector/event" class="input-lg" />
-            </label>
-            <label class="field-row">
-              <span>Token</span>
-              <input type="text" v-model="splunkHec.token" placeholder="HEC token" class="input-md" />
-            </label>
-            <label class="field-row">
-              <span>Source</span>
-              <input type="text" v-model="splunkHec.source" placeholder="depot" class="input-md" />
-            </label>
-            <label class="field-row">
-              <span>Sourcetype</span>
-              <input type="text" v-model="splunkHec.sourcetype" placeholder="depot:request" class="input-md" />
-            </label>
-            <label class="field-row">
-              <span>Index</span>
-              <input type="text" v-model="splunkHec.index" placeholder="main" class="input-md" />
-            </label>
-            <label class="checkbox-group">
-              <input type="checkbox" v-model="splunkHec.tls_skip_verify" />
-              <span>Skip TLS verification</span>
-            </label>
-          </template>
         </div>
       </details>
 

@@ -32,7 +32,7 @@ Multiple Depot instances can run against shared KV + S3 backends with no coordin
 ### Security and Administration
 
 - **Authentication & RBAC** -- JWT and Basic auth, Argon2 password hashing, role-based access control
-- **Vue web UI** -- repository, user, role, and store management, audit log, and settings
+- **Vue web UI** -- repository, user, role, and store management, plus settings
 - **OpenAPI** -- interactive Swagger UI at `/swagger-ui/`
 
 ## Getting Started
@@ -98,7 +98,7 @@ docker pull localhost:8080/docker-local/myimage:latest
 
 See the [`docs/`](docs/) directory:
 
-- [Architecture](docs/architecture.md) -- storage, consistency model, clustering, GC, audit, and auth
+- [Architecture](docs/architecture.md) -- storage, consistency model, clustering, GC, logging, and auth
 - [Configuration](docs/configuration.md) -- TOML config reference, runtime settings, and blob store management
 - [Usage](docs/usage.md) -- CLI reference, supported formats, API docs, and benchmarking
 
