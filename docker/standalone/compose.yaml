@@ -17,37 +17,6 @@ services:
       - ./depotd.toml:/etc/depot/depotd.toml:ro
     restart: unless-stopped
 
-  # One-shot container that waits for depot to be healthy, then creates
-  # the default blob store via the REST API.  Idempotent: safe to re-run.
-  depot-init:
-    image: alpine/curl:latest
-    depends_on:
-      - depot
-    restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo "Waiting for depot..."
-        for i in $$(seq 1 30); do
-          if curl -sf http://depot:8080/api/v1/health >/dev/null 2>&1; then
-            echo "Depot is ready."
-            break
-          fi
-          if [ "$$i" = "30" ]; then echo "ERROR: depot did not start in 60s"; exit 1; fi
-          sleep 2
-        done
-
-        echo "Creating default blob store..."
-        code=$$(curl -s -o /dev/null -w "%{http_code}" \
-          -u admin:admin \
-          -X POST http://depot:8080/api/v1/stores \
-          -H "Content-Type: application/json" \
-          -d '{"name":"default","store_type":"file","root":"/data/blobs"}')
-
-        if [ "$$code" = "201" ]; then echo "Store created."
-        elif [ "$$code" = "409" ]; then echo "Store already exists."
-        else echo "ERROR: store creation failed (HTTP $$code)"; exit 1; fi
-
   # ---------------------------------------------------------------------------
   # Observability – object storage for Tempo & Loki
   # ---------------------------------------------------------------------------

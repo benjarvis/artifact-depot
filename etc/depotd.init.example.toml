@@ -1,0 +1,102 @@
+# Reference [initialization] example for self-contained ephemeral configs
+# (edge caches, demos). The block runs only when the KV store is fresh
+# (no users yet) and is silently ignored on already-initialized clusters.
+#
+# Init-declared names overwrite the default-bootstrap records on conflict
+# (admin user, admin/read-only roles), so an operator can fully customize
+# the built-in admin or scope it to a single repository.
+
+default_admin_password = "admin"
+
+[http]
+listen = "0.0.0.0:8080"
+
+[kv_store]
+type = "redb"
+path = "build/demo/depot.redb"
+
+[initialization]
+
+# --- Roles -----------------------------------------------------------------
+
+[[initialization.roles]]
+name = "developer"
+description = "Read everything; write hosted-raw"
+capabilities = [
+    { capability = "read", repo = "*" },
+    { capability = "write", repo = "hosted-raw" },
+]
+
+# Override the default `admin` role to scope it (optional). Without this,
+# the default `admin` role with full * access is used.
+# [[initialization.roles]]
+# name = "admin"
+# description = "Edge-cache admin"
+# capabilities = [
+#     { capability = "read", repo = "*" },
+#     { capability = "write", repo = "*" },
+# ]
+
+# --- Blob stores -----------------------------------------------------------
+
+[[initialization.stores]]
+name = "local-files"
+store_type = "file"
+root = "/var/lib/depot/blobs"
+sync = true
+io_size = 1024
+direct_io = false
+
+# An S3 store. Health-checked at startup; misconfiguration aborts boot.
+# [[initialization.stores]]
+# name = "s3-archive"
+# store_type = "s3"
+# bucket = "depot-archive"
+# region = "us-east-1"
+# # endpoint = "https://s3.example.com"
+# # access_key = "..."
+# # secret_key = "..."
+
+# --- Repositories ----------------------------------------------------------
+
+[[initialization.repositories]]
+name = "pypi-cache"
+repo_type = "cache"
+format = "pypi"
+store = "local-files"
+upstream_url = "https://pypi.org/simple/"
+cache_ttl_secs = 3600
+cleanup_max_unaccessed_days = 30
+
+[[initialization.repositories]]
+name = "hosted-raw"
+repo_type = "hosted"
+format = "raw"
+store = "local-files"
+
+# --- Users -----------------------------------------------------------------
+
+# A service-account user. The plaintext `password` is hashed with Argon2
+# before persisting. Default `must_change_password = false` is correct for
+# automation; set to true for human operators.
+[[initialization.users]]
+username = "ci"
+password = "hunter2"
+roles = ["developer"]
+
+# Override the default admin user with a fixed password (also suppresses the
+# random-password generation that would otherwise print to stderr).
+# [[initialization.users]]
+# username = "admin"
+# password = "well-known-demo-password"
+# roles = ["admin"]
+# must_change_password = false
+
+# --- Cluster settings overrides --------------------------------------------
+
+# Any subset of the dynamic Settings can be overridden. Omitted fields fall
+# back to their built-in defaults.
+[initialization.settings]
+max_artifact_bytes = 10737418240   # 10 GiB
+default_docker_repo = "hosted-raw"
+access_log = true

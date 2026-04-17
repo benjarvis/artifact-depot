@@ -241,6 +241,7 @@ impl TestServer {
         crate::server::config::bootstrap::bootstrap_users(
             state.repo.kv.as_ref(),
             Some("admin".to_string()),
+            false,
         )
         .await
         .expect("failed to bootstrap users");

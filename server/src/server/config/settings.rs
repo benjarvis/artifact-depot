@@ -25,7 +25,13 @@ use depot_core::store::kv::KvStore;
 /// Operational settings shared across all cluster instances.
 ///
 /// Stored as a single msgpack-encoded blob under `TAG_META` key `"settings"`.
+///
+/// `#[serde(default)]` at the container level lets the TOML
+/// `[initialization.settings]` section omit any field — missing values fall
+/// back to [`Settings::default`]. KV deserialization is unaffected because
+/// stored records always contain every field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(default)]
 pub struct Settings {
     /// Log all HTTP requests (method, path, status, duration).
     pub access_log: bool,

@@ -225,15 +225,28 @@ async fn async_main(cfg: config::Config) -> anyhow::Result<()> {
 
     let mut state = server::AppState::new(&cfg, instance_id).await?;
 
+    // Detect a fresh KV BEFORE running any bootstrap so we can decide whether
+    // to apply the declarative [initialization] section.
+    let was_fresh = server::config::init::kv_is_fresh(state.repo.kv.as_ref()).await?;
+
+    // If [initialization] declares an admin user, skip the default admin
+    // generation so we don't print a throwaway random password that's about
+    // to be overwritten.
+    let skip_default_admin = cfg
+        .initialization
+        .as_ref()
+        .is_some_and(|i| i.users.iter().any(|u| u.username == "admin"));
+
     // Bootstrap roles if none exist.
     if server::config::bootstrap::bootstrap_roles(state.repo.kv.as_ref()).await? {
         eprintln!("  Roles bootstrapped: admin, read-only");
     }
 
-    // Bootstrap admin user if no users exist.
+    // Bootstrap admin user (and anonymous) if no users exist.
     if let Some(password) = server::config::bootstrap::bootstrap_users(
         state.repo.kv.as_ref(),
         cfg.default_admin_password.clone(),
+        skip_default_admin,
     )
     .await?
     {
@@ -244,6 +257,27 @@ async fn async_main(cfg: config::Config) -> anyhow::Result<()> {
         eprintln!("  Password: {}", password);
         eprintln!("========================================");
         eprintln!();
+    }
+
+    // Apply declarative initialization, if configured and the KV was fresh.
+    if was_fresh {
+        if let Some(ref init_cfg) = cfg.initialization {
+            if !init_cfg.is_empty() {
+                let summary = server::config::init::apply_initialization(&state, init_cfg).await?;
+                eprintln!(
+                    "  Initialization applied: {} roles, {} stores, {} repos, {} users{}",
+                    summary.roles_created,
+                    summary.stores_created,
+                    summary.repos_created,
+                    summary.users_created,
+                    if summary.settings_overridden {
+                        ", settings overridden"
+                    } else {
+                        ""
+                    },
+                );
+            }
+        }
     }
 
     // Clean up any stale upload sessions from a previous crash.

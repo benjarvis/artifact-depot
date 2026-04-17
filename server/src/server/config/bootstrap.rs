@@ -61,11 +61,19 @@ pub async fn bootstrap_roles(kv: &dyn store::KvStore) -> error::Result<bool> {
 }
 
 /// Creates "admin" and "anonymous" users if the user table is empty.
-/// If `default_password` is `Some`, uses that; otherwise generates a random one.
-/// Returns `Some(cleartext_password)` if users were created, `None` if they already existed.
+///
+/// When `skip_admin` is `true`, only the `anonymous` user is created and
+/// `None` is returned — the caller is expected to create `admin` itself (e.g.
+/// from the `[initialization]` config section), so we don't want to print a
+/// throwaway random password here.
+///
+/// If `default_password` is `Some`, uses it for the created admin; otherwise
+/// a random one is generated. Returns `Some(cleartext_password)` when a
+/// random admin password was used, `None` otherwise.
 pub async fn bootstrap_users(
     kv: &dyn store::KvStore,
     default_password: Option<String>,
+    skip_admin: bool,
 ) -> error::Result<Option<String>> {
     let users_empty = service::list_users(kv).await?.is_empty();
 
@@ -73,21 +81,7 @@ pub async fn bootstrap_users(
         return Ok(None);
     }
 
-    let password = default_password.unwrap_or_else(auth::generate_random_password);
-    let hash = auth::hash_password(password.clone()).await?;
     let now = repo::now_utc();
-
-    let admin_user = store::UserRecord {
-        schema_version: CURRENT_RECORD_VERSION,
-        username: "admin".to_string(),
-        password_hash: hash,
-        roles: vec!["admin".to_string()],
-        auth_source: "builtin".to_string(),
-        token_secret: auth::generate_token_secret(),
-        must_change_password: true,
-        created_at: now,
-        updated_at: now,
-    };
 
     let anon_user = store::UserRecord {
         schema_version: CURRENT_RECORD_VERSION,
@@ -101,8 +95,28 @@ pub async fn bootstrap_users(
         updated_at: now,
     };
 
-    service::put_user(kv, &admin_user).await?;
     service::put_user(kv, &anon_user).await?;
+
+    if skip_admin {
+        return Ok(None);
+    }
+
+    let password = default_password.unwrap_or_else(auth::generate_random_password);
+    let hash = auth::hash_password(password.clone()).await?;
+
+    let admin_user = store::UserRecord {
+        schema_version: CURRENT_RECORD_VERSION,
+        username: "admin".to_string(),
+        password_hash: hash,
+        roles: vec!["admin".to_string()],
+        auth_source: "builtin".to_string(),
+        token_secret: auth::generate_token_secret(),
+        must_change_password: true,
+        created_at: now,
+        updated_at: now,
+    };
+
+    service::put_user(kv, &admin_user).await?;
 
     Ok(Some(password))
 }
@@ -170,7 +184,7 @@ mod tests {
         // Roles must exist first for a realistic bootstrap.
         bootstrap_roles(kv.as_ref()).await.unwrap();
 
-        let result = bootstrap_users(kv.as_ref(), Some("test123".to_string()))
+        let result = bootstrap_users(kv.as_ref(), Some("test123".to_string()), false)
             .await
             .unwrap();
         assert_eq!(result, Some("test123".to_string()));
@@ -186,9 +200,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let kv = open_kv(&dir).await;
 
-        let result = bootstrap_users(kv.as_ref(), None).await.unwrap();
+        let result = bootstrap_users(kv.as_ref(), None, false).await.unwrap();
         assert!(result.is_some());
         assert!(!result.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_bootstrap_users_skip_admin_creates_only_anonymous() {
+        let dir = tempfile::tempdir().unwrap();
+        let kv = open_kv(&dir).await;
+
+        let result = bootstrap_users(kv.as_ref(), Some("unused".to_string()), true)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+
+        let users = service::list_users(kv.as_ref()).await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].username, "anonymous");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -211,7 +240,7 @@ mod tests {
         };
         service::put_user(kv.as_ref(), &user).await.unwrap();
 
-        let result = bootstrap_users(kv.as_ref(), None).await.unwrap();
+        let result = bootstrap_users(kv.as_ref(), None, false).await.unwrap();
         assert!(result.is_none());
     }
 }

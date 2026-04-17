@@ -11,6 +11,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::server::api::conversions::{
+    build_repo_kind_and_format, validate_yum_proxy_member_depth,
+};
 use crate::server::auth::backend::check_grants;
 use crate::server::infra::task::{RepoCleanResult, TaskKind, TaskResult};
 use crate::server::worker::blob_reaper;
@@ -23,7 +26,7 @@ use depot_core::store::kv::{
     UpstreamAuth, CURRENT_RECORD_VERSION,
 };
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateRepoRequest {
     pub name: String,
     pub repo_type: RepoType,
@@ -44,7 +47,7 @@ pub struct CreateRepoRequest {
 
 impl CreateRepoRequest {
     /// Build a [`FormatConfig`] from the flat request fields.
-    fn format_config(&self) -> FormatConfig {
+    pub(crate) fn format_config(&self) -> FormatConfig {
         match self.format {
             ArtifactFormat::Raw => FormatConfig::Raw {
                 content_disposition: self.content_disposition,
@@ -268,76 +271,13 @@ pub async fn create_repo(
     if let Err(e) = state.auth.backend.require_admin(&user.0).await {
         return e.into_response();
     }
-    // Validate.
     if req.name.is_empty() {
         return DepotError::BadRequest("name is required".into()).into_response();
     }
-    if req.cleanup_max_age_days == Some(0) {
-        return DepotError::BadRequest("cleanup_max_age_days must be >= 1".into()).into_response();
-    }
-    if req.cleanup_max_unaccessed_days == Some(0) {
-        return DepotError::BadRequest("cleanup_max_unaccessed_days must be >= 1".into())
-            .into_response();
-    }
-    if let Some(depth) = req.repodata_depth {
-        if depth > 5 {
-            return DepotError::BadRequest("repodata_depth must be 0-5".into()).into_response();
-        }
-        if req.format != ArtifactFormat::Yum {
-            return DepotError::BadRequest(
-                "repodata_depth is only valid for Yum repositories".into(),
-            )
-            .into_response();
-        }
-        if req.repo_type == RepoType::Cache {
-            return DepotError::BadRequest(
-                "repodata_depth is not supported for cache repositories".into(),
-            )
-            .into_response();
-        }
-    }
 
-    // Build FormatConfig before kind construction (which moves fields out of req).
-    let format_config = req.format_config();
-
-    // Build RepoKind from request fields (validation is part of enum construction).
-    let kind = match req.repo_type {
-        RepoType::Hosted => RepoKind::Hosted,
-        RepoType::Cache => {
-            let upstream_url = match req.upstream_url {
-                Some(url) => url,
-                None => {
-                    return DepotError::BadRequest("upstream_url required for cache repos".into())
-                        .into_response();
-                }
-            };
-            RepoKind::Cache {
-                upstream_url,
-                cache_ttl_secs: req.cache_ttl_secs.unwrap_or(0),
-                upstream_auth: req.upstream_auth,
-            }
-        }
-        RepoType::Proxy => {
-            let members = match req.members {
-                Some(m) if !m.is_empty() => m,
-                _ => {
-                    return DepotError::BadRequest("members required for proxy repos".into())
-                        .into_response();
-                }
-            };
-            if let Some(ref wm) = req.write_member {
-                if !members.contains(wm) {
-                    return DepotError::BadRequest(
-                        "write_member must be one of the listed members".into(),
-                    )
-                    .into_response();
-                }
-            }
-            RepoKind::Proxy {
-                members,
-                write_member: req.write_member,
-            }
-        }
+    let (kind, format_config) = match build_repo_kind_and_format(&req) {
+        Ok(pair) => pair,
+        Err(e) => return e.into_response(),
     };
 
     // For Yum proxy repos, validate that all members have the same repodata_depth.
@@ -892,31 +832,4 @@ pub async fn clean_repo(
 
     let info = state.bg.tasks.get(task_id).await;
     (StatusCode::CREATED, Json(info)).into_response()
-}
-
-/// Validate that all Yum proxy members have the same `repodata_depth`.
-async fn validate_yum_proxy_member_depth(
-    kv: &dyn depot_core::store::kv::KvStore,
-    members: &[String],
-) -> Result<(), DepotError> {
-    let mut depths: Vec<(String, u32)> = Vec::new();
-    for name in members {
-        if let Some(cfg) = service::get_repo(kv, name).await? {
-            if cfg.format() == ArtifactFormat::Yum {
-                depths.push((name.clone(), cfg.format_config.repodata_depth()));
-            }
-        }
-    }
-    if let Some((first, rest)) = depths.split_first() {
-        for (name, d) in rest {
-            if *d != first.1 {
-                return Err(DepotError::BadRequest(format!(
-                    "all Yum proxy members must have the same repodata_depth \
-                     (member '{}' has depth {}, member '{}' has depth {})",
-                    first.0, first.1, name, d,
-                )));
-            }
-        }
-    }
-    Ok(())
 }

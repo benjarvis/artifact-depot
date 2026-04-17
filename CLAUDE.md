@@ -50,3 +50,7 @@ Docker V2 / OCI Distribution Spec. Supports Docker V2, Docker manifest list (mul
 ### Vue Frontend
 
 Embedded via rust-embed. Provides repository, user, role, and store management, audit log, API docs, and settings.
+
+### Declarative Initialization
+
+`depotd.toml` accepts an optional `[initialization]` section that runs only when the KV store is fresh (no users yet). It can declare roles, stores, repositories, users, and settings overrides — the same shapes the REST `POST /api/v1/{stores,repositories,users,roles}` endpoints accept. Used for self-contained edge-cache and demo configs. On already-initialized clusters the section is silently ignored. Init-declared names overwrite default-bootstrap records (`admin` user, `admin`/`read-only` roles); declaring an `admin` user also suppresses the throwaway random-password default. Single-instance assumption: no distributed lease guards first-boot — multi-instance DynamoDB deployments inherit the same race as `bootstrap_roles`/`bootstrap_users`. See `etc/depotd.init.example.toml` for a fully populated example.

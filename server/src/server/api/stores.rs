@@ -12,6 +12,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::server::api::conversions::{build_store_kind, normalize_s3_prefix};
 use crate::server::infra::store_registry::instantiate_store;
 use crate::server::AppState;
 use depot_core::auth::AuthenticatedUser;
@@ -19,7 +20,7 @@ use depot_core::error::DepotError;
 use depot_core::service;
 use depot_core::store::kv::{StoreKind, StoreRecord, StoreStatsRecord, CURRENT_RECORD_VERSION};
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct CreateStoreRequest {
     pub name: String,
     pub store_type: String,
@@ -81,18 +82,6 @@ fn default_s3_read_timeout_secs() -> u64 {
 
 fn default_s3_retry_mode() -> String {
     "standard".to_string()
-}
-
-/// Normalize an S3 key prefix: strip leading/trailing slashes, ensure
-/// trailing slash if non-empty, return `None` if effectively empty.
-fn normalize_s3_prefix(raw: Option<String>) -> Option<String> {
-    let s = raw.unwrap_or_default();
-    let trimmed = s.trim_matches('/');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(format!("{trimmed}/"))
-    }
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -293,79 +282,9 @@ pub async fn create_store(
         return DepotError::BadRequest("name is required".into()).into_response();
     }
 
-    let kind = match req.store_type.as_str() {
-        "file" => {
-            let root = match req.root {
-                Some(r) => r,
-                None => {
-                    return DepotError::BadRequest("root is required for file stores".into())
-                        .into_response();
-                }
-            };
-            if req.io_size < 4 || req.io_size > 65536 {
-                return DepotError::BadRequest("io_size must be between 4 and 65536 KiB".into())
-                    .into_response();
-            }
-            StoreKind::File {
-                root,
-                sync: req.sync,
-                io_size: req.io_size,
-                direct_io: req.direct_io,
-            }
-        }
-        "s3" => {
-            let bucket = match req.bucket {
-                Some(b) if !b.is_empty() => b,
-                _ => {
-                    return DepotError::BadRequest("bucket is required for s3 stores".into())
-                        .into_response();
-                }
-            };
-            if req.max_retries > 20 {
-                return DepotError::BadRequest(format!(
-                    "max_retries: {} must be in [0, 20]",
-                    req.max_retries
-                ))
-                .into_response();
-            }
-            if req.connect_timeout_secs == 0 || req.connect_timeout_secs > 7200 {
-                return DepotError::BadRequest(format!(
-                    "connect_timeout_secs: {} must be in [1, 7200]",
-                    req.connect_timeout_secs
-                ))
-                .into_response();
-            }
-            if req.read_timeout_secs > 7200 {
-                return DepotError::BadRequest(format!(
-                    "read_timeout_secs: {} must be in [0, 7200] (0 = disabled)",
-                    req.read_timeout_secs
-                ))
-                .into_response();
-            }
-            if req.retry_mode != "standard" && req.retry_mode != "adaptive" {
-                return DepotError::BadRequest(format!(
-                    "retry_mode: {:?} must be \"standard\" or \"adaptive\"",
-                    req.retry_mode
-                ))
-                .into_response();
-            }
-            StoreKind::S3 {
-                bucket,
-                endpoint: req.endpoint,
-                region: req.region,
-                prefix: normalize_s3_prefix(req.prefix),
-                access_key: req.access_key,
-                secret_key: req.secret_key,
-                max_retries: req.max_retries,
-                connect_timeout_secs: req.connect_timeout_secs,
-                read_timeout_secs: req.read_timeout_secs,
-                retry_mode: req.retry_mode,
-            }
-        }
-        other => {
-            return DepotError::BadRequest(format!("unknown store_type: {}", other))
-                .into_response();
-        }
+    let kind = match build_store_kind(&req) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
     };
 
     // Verify connectivity by instantiating the store.
