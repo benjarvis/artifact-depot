@@ -413,6 +413,21 @@ async fn refresh_cache_index(
 }
 
 async fn cache_get_index(state: &FormatState, config: &RepoConfig) -> Response {
+    // Opportunistically migrate any cached charts still at the legacy
+    // `_charts/` path. Cheap no-op when there's nothing to migrate; ensures
+    // that cache repos upgraded from pre-flattening builds don't leak
+    // orphan records that serve 404s on download.
+    if let Ok(blobs) = state.blob_store(&config.store).await {
+        let store = helm_store_from_config(config, state, blobs.as_ref());
+        if let Err(e) = store.migrate_legacy_chart_paths().await {
+            tracing::warn!(
+                repo = config.name,
+                error = %e,
+                "helm cache: legacy chart path migration failed"
+            );
+        }
+    }
+
     match refresh_cache_index(state, config).await {
         Ok(Some(data)) => yaml_response(data),
         Ok(None) => DepotError::NotFound("index.yaml not found".into()).into_response(),

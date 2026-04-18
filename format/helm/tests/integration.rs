@@ -590,7 +590,7 @@ async fn test_hosted_delete_triggers_index_rebuild() {
     // Delete the chart via the raw artifact handler.
     let req = app.auth_request(
         Method::DELETE,
-        "/repository/helm-del/_charts/delme/delme-1.0.0.tgz",
+        "/repository/helm-del/charts/delme-1.0.0.tgz",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -908,5 +908,227 @@ generated: \"2026-01-02T00:00:00Z\"
     assert!(
         text.contains("beta"),
         "proxy should see new upstream chart beta after TTL expiry"
+    );
+}
+
+// ===========================================================================
+// Migration: legacy `_charts/{name}/{name}-{version}.tgz` records are moved
+// to the unified `charts/{name}-{version}.tgz` path on first index fetch.
+// ===========================================================================
+
+/// Simulates pre-upgrade state by moving a just-uploaded record back to the
+/// legacy `_charts/{name}/{name}-{version}.tgz` path and clearing the stale
+/// flag. Returns the legacy path so tests can assert it gets cleaned up.
+async fn relocate_to_legacy_path(app: &TestApp, repo: &str, name: &str, version: &str) -> String {
+    let new_path = format!("charts/{name}-{version}.tgz");
+    let old_path = format!("_charts/{name}/{name}-{version}.tgz");
+    let kv = app.state.repo.kv.as_ref();
+
+    let record = depot_core::service::get_artifact(kv, repo, &new_path)
+        .await
+        .expect("get uploaded chart")
+        .expect("uploaded chart record exists");
+
+    depot_core::service::delete_artifact(kv, repo, &new_path)
+        .await
+        .expect("delete new-path record");
+    depot_core::service::put_artifact(kv, repo, &old_path, &record)
+        .await
+        .expect("put at legacy path");
+
+    // Clear the stale flag so the test exercises the `_charts/` presence
+    // check rather than the explicit stale-flag branch.
+    let _ = depot_core::service::delete_artifact(kv, repo, "_helm/metadata_stale").await;
+
+    old_path
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_migrates_legacy_charts_path_on_index_fetch() {
+    let app = TestApp::new().await;
+    app.create_helm_repo("helm-mig").await;
+    let token = app.admin_token();
+
+    // Seed an uploaded chart, then relocate it to the pre-flattening path.
+    let chart = build_synthetic_chart("legacy", "1.0.0", "migrate me").unwrap();
+    let req = helm_upload_request("helm-mig", "legacy-1.0.0.tgz", &chart, &token);
+    let (status, _) = app.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let legacy_path = relocate_to_legacy_path(&app, "helm-mig", "legacy", "1.0.0").await;
+    let new_path = "charts/legacy-1.0.0.tgz";
+
+    // Sanity: before migration, legacy path is present and new path is absent.
+    let kv = app.state.repo.kv.as_ref();
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig", &legacy_path)
+            .await
+            .unwrap()
+            .is_some(),
+        "precondition: legacy record should exist"
+    );
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig", new_path)
+            .await
+            .unwrap()
+            .is_none(),
+        "precondition: new-path record should not yet exist"
+    );
+
+    // First index fetch should detect the legacy records, trigger a rebuild,
+    // migrate records, and return an index containing the chart.
+    let req = app.auth_request(Method::GET, "/helm/helm-mig/index.yaml", &token);
+    let (status, body) = app.call_raw(req).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("legacy"),
+        "rebuilt index should contain migrated chart, got: {text}"
+    );
+    assert!(
+        text.contains("charts/legacy-1.0.0.tgz"),
+        "urls should point to the unified path, got: {text}"
+    );
+
+    // Records should now live at the new path only.
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig", &legacy_path)
+            .await
+            .unwrap()
+            .is_none(),
+        "legacy record should be deleted after migration"
+    );
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig", new_path)
+            .await
+            .unwrap()
+            .is_some(),
+        "record should exist at new flat path after migration"
+    );
+
+    // Download through the public URL must return the original chart bytes.
+    let req = app.auth_request(
+        Method::GET,
+        "/helm/helm-mig/charts/legacy-1.0.0.tgz",
+        &token,
+    );
+    let (status, body) = app.call_raw(req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, chart, "downloaded chart bytes should match");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_migration_is_idempotent_on_repeat_rebuild() {
+    let app = TestApp::new().await;
+    app.create_helm_repo("helm-mig-idem").await;
+    let token = app.admin_token();
+
+    let chart = build_synthetic_chart("idem", "2.0.0", "idempotency").unwrap();
+    let req = helm_upload_request("helm-mig-idem", "idem-2.0.0.tgz", &chart, &token);
+    let (status, _) = app.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    relocate_to_legacy_path(&app, "helm-mig-idem", "idem", "2.0.0").await;
+
+    // Fetch twice — the second fetch must not re-trigger migration work since
+    // the legacy records are already gone. Both responses should be valid.
+    for _ in 0..2 {
+        let req = app.auth_request(Method::GET, "/helm/helm-mig-idem/index.yaml", &token);
+        let (status, body) = app.call_raw(req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(String::from_utf8_lossy(&body).contains("idem"));
+    }
+
+    // After two fetches there should be exactly one record, at the new path.
+    let kv = app.state.repo.kv.as_ref();
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig-idem", "_charts/idem/idem-2.0.0.tgz")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig-idem", "charts/idem-2.0.0.tgz")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cache_migrates_legacy_charts_path_on_index_fetch() {
+    // Cache repos don't rebuild an index locally — they serve the upstream's
+    // index — but an opportunistic migration runs on index fetch to clean up
+    // pre-flattening on-disk state and keep chart downloads working.
+    let upstream = wiremock::MockServer::start().await;
+
+    let chart = build_synthetic_chart("cached-legacy", "1.0.0", "cache-migrate").unwrap();
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/charts/cached-legacy-1.0.0.tgz"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(chart.clone())
+                .insert_header("Content-Type", "application/gzip"),
+        )
+        .mount(&upstream)
+        .await;
+
+    let index_yaml = "\
+apiVersion: v1
+entries:
+  cached-legacy:
+    - name: cached-legacy
+      version: 1.0.0
+      urls:
+        - charts/cached-legacy-1.0.0.tgz
+generated: \"2026-01-01T00:00:00Z\"
+";
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/index.yaml"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(index_yaml)
+                .insert_header("Content-Type", "application/x-yaml"),
+        )
+        .mount(&upstream)
+        .await;
+
+    let app = TestApp::new().await;
+    app.create_helm_cache_repo("helm-mig-cache", &upstream.uri(), 300)
+        .await;
+    let token = app.admin_token();
+
+    // Prime the cache by pulling the chart through the proxy, then relocate
+    // the resulting record back to the legacy path.
+    let req = app.auth_request(
+        Method::GET,
+        "/helm/helm-mig-cache/charts/cached-legacy-1.0.0.tgz",
+        &token,
+    );
+    let (status, _) = app.call_raw(req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let legacy_path =
+        relocate_to_legacy_path(&app, "helm-mig-cache", "cached-legacy", "1.0.0").await;
+
+    // Fetch the index — should drive the cache migration hook.
+    let req = app.auth_request(Method::GET, "/helm/helm-mig-cache/index.yaml", &token);
+    let (status, _) = app.call_raw(req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let kv = app.state.repo.kv.as_ref();
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig-cache", &legacy_path)
+            .await
+            .unwrap()
+            .is_none(),
+        "legacy record should be migrated away in cache repo"
+    );
+    assert!(
+        depot_core::service::get_artifact(kv, "helm-mig-cache", "charts/cached-legacy-1.0.0.tgz")
+            .await
+            .unwrap()
+            .is_some(),
+        "migrated record should exist at unified path"
     );
 }
