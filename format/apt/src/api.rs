@@ -134,17 +134,12 @@ async fn handle_upload(
     headers: &HeaderMap,
     body: Body,
 ) -> Response {
-    let (_target_repo, target_config, blobs) = match api_helpers::upload_preamble(
-        state,
-        &user.0,
-        &config.name,
-        ArtifactFormat::Apt,
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return e.into_response(),
-    };
+    let (_target_repo, target_config, blobs) =
+        match api_helpers::upload_preamble(state, &user.0, &config.name, ArtifactFormat::Apt).await
+        {
+            Ok(v) => v,
+            Err(e) => return e.into_response(),
+        };
 
     let mut multipart = match api_helpers::multipart_from_body(method, headers, body).await {
         Ok(m) => m,
@@ -219,11 +214,7 @@ async fn handle_upload(
     }
 }
 
-async fn handle_create_snapshot(
-    state: &FormatState,
-    config: &RepoConfig,
-    body: Body,
-) -> Response {
+async fn handle_create_snapshot(state: &FormatState, config: &RepoConfig, body: Body) -> Response {
     let config =
         match api_helpers::validate_format_repo(state, &config.name, ArtifactFormat::Apt).await {
             Ok(c) => c,
@@ -236,9 +227,7 @@ async fn handle_create_snapshot(
     };
     let req: CreateSnapshotRequest = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
-        Err(e) => {
-            return DepotError::BadRequest(format!("invalid JSON body: {e}")).into_response()
-        }
+        Err(e) => return DepotError::BadRequest(format!("invalid JSON body: {e}")).into_response(),
     };
 
     let blobs = match state.blob_store(&config.store).await {
@@ -720,4 +709,3 @@ async fn rebuild_proxy_apt_metadata(
 
     Ok(())
 }
-

@@ -81,7 +81,11 @@ async fn test_upload_and_download() {
     assert_eq!(status, StatusCode::OK);
 
     // Download the chart
-    let req = app.auth_request(Method::GET, "/repository/helm-dl/charts/nginx-1.0.0.tgz", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/helm-dl/charts/nginx-1.0.0.tgz",
+        &token,
+    );
     let (status, downloaded) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, chart, "downloaded chart should match uploaded");
@@ -127,7 +131,11 @@ async fn test_multiple_charts() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/repository/helm-multi-chart/index.yaml", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/helm-multi-chart/index.yaml",
+        &token,
+    );
     let (_, body) = app.call_raw(req).await;
     let index = String::from_utf8(body).unwrap();
 
@@ -433,7 +441,11 @@ async fn test_cache_index_upstream_unavailable() {
     let token = app.admin_token();
 
     // Should 404 since there's no cached index and upstream is down.
-    let req = app.auth_request(Method::GET, "/repository/helm-cache-fail/index.yaml", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/helm-cache-fail/index.yaml",
+        &token,
+    );
     let (status, _) = app.call_raw(req).await;
     assert_eq!(
         status,
@@ -492,7 +504,11 @@ async fn test_hosted_download_chart() {
     assert_eq!(status, StatusCode::OK);
 
     // Download the chart back.
-    let req = app.auth_request(Method::GET, "/repository/helm-dl/charts/myapp-2.1.0.tgz", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/helm-dl/charts/myapp-2.1.0.tgz",
+        &token,
+    );
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
@@ -977,7 +993,7 @@ async fn test_migrates_legacy_charts_path_on_index_fetch() {
 
     // First index fetch should detect the legacy records, trigger a rebuild,
     // migrate records, and return an index containing the chart.
-    let req = app.auth_request(Method::GET, "/helm/helm-mig/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-mig/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8_lossy(&body);
@@ -1009,7 +1025,7 @@ async fn test_migrates_legacy_charts_path_on_index_fetch() {
     // Download through the public URL must return the original chart bytes.
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-mig/charts/legacy-1.0.0.tgz",
+        "/repository/helm-mig/charts/legacy-1.0.0.tgz",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -1033,7 +1049,7 @@ async fn test_migration_is_idempotent_on_repeat_rebuild() {
     // Fetch twice — the second fetch must not re-trigger migration work since
     // the legacy records are already gone. Both responses should be valid.
     for _ in 0..2 {
-        let req = app.auth_request(Method::GET, "/helm/helm-mig-idem/index.yaml", &token);
+        let req = app.auth_request(Method::GET, "/repository/helm-mig-idem/index.yaml", &token);
         let (status, body) = app.call_raw(req).await;
         assert_eq!(status, StatusCode::OK);
         assert!(String::from_utf8_lossy(&body).contains("idem"));
@@ -1102,7 +1118,7 @@ generated: \"2026-01-01T00:00:00Z\"
     // the resulting record back to the legacy path.
     let req = app.auth_request(
         Method::GET,
-        "/helm/helm-mig-cache/charts/cached-legacy-1.0.0.tgz",
+        "/repository/helm-mig-cache/charts/cached-legacy-1.0.0.tgz",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -1112,7 +1128,7 @@ generated: \"2026-01-01T00:00:00Z\"
         relocate_to_legacy_path(&app, "helm-mig-cache", "cached-legacy", "1.0.0").await;
 
     // Fetch the index — should drive the cache migration hook.
-    let req = app.auth_request(Method::GET, "/helm/helm-mig-cache/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-mig-cache/index.yaml", &token);
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 

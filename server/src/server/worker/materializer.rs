@@ -183,6 +183,12 @@ fn apply_batch(model: &ModelHandle, events: &[Envelope]) {
                 if let Some(repo) = public.repos.iter_mut().find(|r| r.name == *name) {
                     repo.artifact_count = *artifact_count;
                     repo.total_bytes = *total_bytes;
+                    let labels = [
+                        ("repository", repo.name.clone()),
+                        ("repo_type", repo.repo_type.to_string()),
+                    ];
+                    gauge!("depot_repository_artifacts", &labels).set(*artifact_count as f64);
+                    gauge!("depot_repository_bytes", &labels).set(*total_bytes as f64);
                 }
                 modified_public = true;
             }

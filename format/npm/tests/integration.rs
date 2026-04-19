@@ -33,7 +33,11 @@ async fn test_non_npm_repo_400() {
     // rather than 400 — URL shape is no longer tied to format.
     let app = TestApp::new().await;
     app.create_hosted_repo("raw-repo").await;
-    let req = app.auth_request(Method::GET, "/repository/raw-repo/some-pkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/raw-repo/some-pkg",
+        &app.admin_token(),
+    );
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -216,7 +220,11 @@ async fn test_publish_and_get_packument() {
     assert_eq!(status, StatusCode::OK);
 
     // Get packument
-    let req = app.auth_request(Method::GET, "/repository/npm-hosted/my-pkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-hosted/my-pkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -383,7 +391,11 @@ async fn test_multiple_versions() {
     assert_eq!(status, StatusCode::OK);
 
     // Get packument -- should have both versions, dist-tags updated to v2
-    let req = app.auth_request(Method::GET, "/repository/npm-multi/multi-pkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-multi/multi-pkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["dist-tags"]["latest"], "2.0.0");
@@ -426,7 +438,11 @@ async fn test_packument_includes_time_field() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/repository/npm-time/time-pkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-time/time-pkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -453,7 +469,11 @@ async fn test_packument_tarball_url_format_unscoped() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/repository/npm-url/url-pkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-url/url-pkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -461,7 +481,10 @@ async fn test_packument_tarball_url_format_unscoped() {
         .as_str()
         .unwrap();
     // Unscoped: /repository/{repo}/{name}/-/{name}-{version}.tgz
-    assert_eq!(tarball_url, "/repository/npm-url/url-pkg/-/url-pkg-3.0.0.tgz");
+    assert_eq!(
+        tarball_url,
+        "/repository/npm-url/url-pkg/-/url-pkg-3.0.0.tgz"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -489,7 +512,10 @@ async fn test_packument_tarball_url_format_scoped() {
         .as_str()
         .unwrap();
     // Scoped: /repository/{repo}/@scope/pkg/-/{bare_name}-{version}.tgz
-    assert_eq!(tarball_url, "/repository/npm-url-s/@scope/mypkg/-/mypkg-1.2.3.tgz");
+    assert_eq!(
+        tarball_url,
+        "/repository/npm-url-s/@scope/mypkg/-/mypkg-1.2.3.tgz"
+    );
 }
 
 // ===========================================================================
@@ -627,7 +653,11 @@ async fn test_proxy_repo_aggregates_packuments() {
     assert_eq!(status, StatusCode::OK);
 
     // Query through proxy -- should see both versions
-    let req = app.auth_request(Method::GET, "/repository/npm-proxy/shared-pkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-proxy/shared-pkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["versions"]["1.0.0"].is_object());
@@ -808,7 +838,11 @@ async fn test_name_case_insensitive() {
     assert_eq!(status, StatusCode::OK);
 
     // Fetch with original case -- should work
-    let req = app.auth_request(Method::GET, "/repository/npm-case/MyPkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-case/MyPkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(
         status,
@@ -818,7 +852,11 @@ async fn test_name_case_insensitive() {
     assert!(body["versions"]["1.0.0"].is_object());
 
     // Fetch with lowercase -- should also find it because names are normalized
-    let req = app.auth_request(Method::GET, "/repository/npm-case/mypkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-case/mypkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(
         status,
@@ -1020,7 +1058,11 @@ async fn test_packument_has_dist_shasum_and_integrity() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/repository/npm-hashes/hash-pkg", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-hashes/hash-pkg",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -1084,7 +1126,12 @@ async fn test_publish_without_dist_tags_creates_latest() {
             }
         }
     });
-    let req = app.json_request(Method::PUT, "/repository/npm-notags/notags-pkg", &token, body);
+    let req = app.json_request(
+        Method::PUT,
+        "/repository/npm-notags/notags-pkg",
+        &token,
+        body,
+    );
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -1333,7 +1380,11 @@ async fn test_cache_packument_not_found() {
         .await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/repository/npm-cache-miss/no-such-pkg", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/npm-cache-miss/no-such-pkg",
+        &token,
+    );
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

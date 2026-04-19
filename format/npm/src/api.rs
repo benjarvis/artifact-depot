@@ -138,17 +138,13 @@ pub async fn try_handle_repository_write(
         let payload: serde_json::Value = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(e) => {
-                return Some(
-                    DepotError::BadRequest(format!("invalid JSON: {e}")).into_response(),
-                );
+                return Some(DepotError::BadRequest(format!("invalid JSON: {e}")).into_response());
             }
         };
         let name = match payload.get("name").and_then(|v| v.as_str()) {
             Some(n) => n,
             None => {
-                return Some(
-                    DepotError::BadRequest("missing 'name' field".into()).into_response(),
-                );
+                return Some(DepotError::BadRequest("missing 'name' field".into()).into_response());
             }
         };
         let password = match payload.get("password").and_then(|v| v.as_str()) {
@@ -188,14 +184,12 @@ pub async fn try_handle_repository_write(
             if let [scope, pkg] = parts.as_slice() {
                 if !scope.is_empty() && !pkg.is_empty() && !pkg.contains('/') {
                     let package = format!("@{scope}/{pkg}");
-                    let bytes =
-                        match depot_core::api_helpers::body_to_bytes(body, usize::MAX).await {
-                            Ok(b) => b,
-                            Err(e) => return Some(e),
-                        };
-                    return Some(
-                        publish_inner(state, user, &config.name, &package, &bytes).await,
-                    );
+                    let bytes = match depot_core::api_helpers::body_to_bytes(body, usize::MAX).await
+                    {
+                        Ok(b) => b,
+                        Err(e) => return Some(e),
+                    };
+                    return Some(publish_inner(state, user, &config.name, &package, &bytes).await);
                 }
             }
             return None;

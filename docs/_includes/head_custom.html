@@ -1,0 +1,46 @@
+{%- comment -%}
+  Automatic light/dark mode based on the user's OS / browser preference
+  (`prefers-color-scheme`).
+
+  just-the-docs builds three stylesheets at site build time:
+    /assets/css/just-the-docs-default.css   - whatever `color_scheme:`
+                                              points at in _config.yml
+                                              (we use `light`)
+    /assets/css/just-the-docs-light.css     - explicit light palette
+    /assets/css/just-the-docs-dark.css      - explicit dark palette
+
+  The default (light) stylesheet is loaded unconditionally by the parent
+  `head.html` include. We add the dark stylesheet AFTER it with a
+  `media="(prefers-color-scheme: dark)"` attribute. The browser
+  downloads both but only applies dark when the media query matches; the
+  CSS cascade puts dark's rules after default's, so dark wins on match.
+
+  Pure CSS, no JS, no flash-of-light-content. There is no UI toggle --
+  the site follows the OS/browser exactly.
+{%- endcomment -%}
+<link rel="stylesheet"
+      href="{{ '/assets/css/just-the-docs-dark.css' | relative_url }}"
+      media="(prefers-color-scheme: dark)">
+
+<style>
+/* Side-by-side light/dark screenshot pairs on the Screenshots page.
+   Each `<div class="shot-pair">` contains two images; we lay them out
+   in a 2-column grid above 700px wide and stack on narrower screens. */
+.shot-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin: 1rem 0 1.5rem;
+}
+.shot-pair img {
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.25);
+}
+@media (max-width: 700px) {
+  .shot-pair {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

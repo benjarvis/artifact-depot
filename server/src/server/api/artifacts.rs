@@ -141,16 +141,8 @@ pub async fn any_format_request(
     // golang upload, helm upload). Each format's dispatcher runs its own
     // permission check via `upload_preamble`.
     if is_format_write_path(repo_config.format(), &method, &path) {
-        return dispatch_format_write(
-            &state,
-            &user,
-            &repo_config,
-            &method,
-            &path,
-            headers,
-            body,
-        )
-        .await;
+        return dispatch_format_write(&state, &user, &repo_config, &method, &path, headers, body)
+            .await;
     }
 
     axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()

@@ -7,7 +7,7 @@
 	lint-cargo-licenses lint-npm-licenses lint-reuse lint-fmt lint-clippy \
 	security-cargo-advisories security-npm-audit \
 	test-debug test-ui test-dynamodb test-docker-auth \
-	docs docs-serve screenshots
+	docs docs-serve screenshots observability-screenshots
 
 all: test
 
@@ -140,6 +140,15 @@ docs-serve:
 # Playwright project. Outputs land in docs/screenshots/ ready to commit.
 screenshots:
 	@bash scripts/screenshots.sh
+
+# Generate the Grafana-driven observability screenshots embedded in
+# docs/observability.md.  Brings up docker/standalone with the
+# `monitoring` profile (depot + otel-collector + Tempo + Loki +
+# Prometheus + Grafana + MinIO), seeds + trickles depot, waits for
+# dashboards to populate, then captures via the `observability`
+# Playwright project.  Outputs land in docs/screenshots/observability/.
+observability-screenshots:
+	@bash scripts/observability-screenshots.sh
 
 # Utility
 clean:

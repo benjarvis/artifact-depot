@@ -28,17 +28,26 @@ const OUT = process.env.SCREENSHOTS_OUT
 
 mkdirSync(OUT, { recursive: true })
 
-// Capture a screenshot. Defaults to viewport-only (fullPage: false) so
-// long content -- a populated artifact browser, the full Swagger spec --
-// doesn't blow up the docs PNG into something tens of viewports tall.
-// Pass `{ fullPage: true }` for short-content pages where seeing the
-// whole thing matters (the repository list with the stats header on
-// top, settings with all collapsibles, etc).
+// Capture a pair of screenshots -- once with the browser emulating a
+// light prefers-color-scheme, once with dark. Each writes
+// `${name}-light.png` and `${name}-dark.png` so the docs page can show
+// them side by side. The Vue UI honours `prefers-color-scheme` natively,
+// so emulating the media is enough; no separate page reload is needed.
+//
+// Defaults to viewport-only (fullPage: false) so long content -- a
+// populated artifact browser, the full Swagger spec -- doesn't blow up
+// the docs PNGs into something tens of viewports tall. Pass
+// `{ fullPage: true }` for short-content pages where seeing the whole
+// thing matters (the repository list with the stats header on top,
+// settings with all collapsibles, etc).
 async function snap(page: Page, name: string, opts: { fullPage?: boolean } = {}) {
-  await page.screenshot({
-    path: join(OUT, `${name}.png`),
-    fullPage: opts.fullPage ?? false,
-  })
+  const fullPage = opts.fullPage ?? false
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.screenshot({ path: join(OUT, `${name}-light.png`), fullPage })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.screenshot({ path: join(OUT, `${name}-dark.png`), fullPage })
+  // Restore the default for any subsequent operations in the same test.
+  await page.emulateMedia({ colorScheme: 'light' })
 }
 
 // Match the typical desktop browser used to view the docs.

@@ -89,7 +89,11 @@ async fn test_non_cargo_repo_400() {
     let app = TestApp::new().await;
     app.create_hosted_repo("raw-repo").await;
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/repository/raw-repo/index/config.json", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/raw-repo/index/config.json",
+        &token,
+    );
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -103,7 +107,11 @@ async fn test_config_json() {
     let app = TestApp::new().await;
     create_cargo_repo(&app, "cargo-test").await;
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/repository/cargo-test/index/config.json", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/cargo-test/index/config.json",
+        &token,
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["dl"].as_str().unwrap().contains("cargo-test"));
@@ -153,7 +161,11 @@ async fn test_sparse_index() {
 
     let token = app.admin_token();
     // serde -> prefix se/rd
-    let req = app.auth_request(Method::GET, "/repository/cargo-idx/index/se/rd/serde", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/cargo-idx/index/se/rd/serde",
+        &token,
+    );
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -332,7 +344,11 @@ async fn test_search() {
     let token = app.admin_token();
 
     // Search all
-    let req = app.auth_request(Method::GET, "/repository/cargo-search/api/v1/crates", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/cargo-search/api/v1/crates",
+        &token,
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["meta"]["total"], 2);
@@ -440,7 +456,11 @@ async fn test_publish_with_deps() {
     assert_eq!(status, StatusCode::OK, "publish failed: {resp_body}");
 
     // Verify deps appear in the sparse index
-    let req = app.auth_request(Method::GET, "/repository/cargo-deps/index/my/li/my-lib", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/cargo-deps/index/my/li/my-lib",
+        &token,
+    );
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -932,7 +952,11 @@ async fn test_index_entry_multiple_versions() {
     publish_crate(&app, "cargo-multi", "mypkg", "1.0.0", b"crate-v3").await;
 
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/repository/cargo-multi/index/my/pk/mypkg", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/cargo-multi/index/my/pk/mypkg",
+        &token,
+    );
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(body.to_vec()).unwrap();

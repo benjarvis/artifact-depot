@@ -33,7 +33,7 @@ export default defineConfig({
   projects: [
     {
       name: 'parallel',
-      testIgnore: /\b(tasks|settings|screenshots)\b.*\.spec\.ts$/,
+      testIgnore: /\b(tasks|settings|screenshots|observability-screenshots)\b.*\.spec\.ts$/,
       use: chromiumOptions,
     },
     {
@@ -47,7 +47,15 @@ export default defineConfig({
     // also seeds the depot with realistic data first).
     {
       name: 'screenshots',
-      testMatch: /screenshots\.spec\.ts$/,
+      testMatch: /^e2e\/screenshots\.spec\.ts$/,
+      use: chromiumOptions,
+    },
+    // Observability screenshots -- drives Chromium at Grafana to capture
+    // dashboards / traces / logs from a monitoring-profile compose stack.
+    // Run via `make observability-screenshots`.
+    {
+      name: 'observability',
+      testMatch: /observability-screenshots\.spec\.ts$/,
       use: chromiumOptions,
     },
   ],

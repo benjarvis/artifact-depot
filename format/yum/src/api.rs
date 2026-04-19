@@ -77,17 +77,12 @@ async fn handle_upload(
     headers: &HeaderMap,
     body: Body,
 ) -> Response {
-    let (_target_repo, target_config, blobs) = match api_helpers::upload_preamble(
-        state,
-        &user.0,
-        &config.name,
-        ArtifactFormat::Yum,
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return e.into_response(),
-    };
+    let (_target_repo, target_config, blobs) =
+        match api_helpers::upload_preamble(state, &user.0, &config.name, ArtifactFormat::Yum).await
+        {
+            Ok(v) => v,
+            Err(e) => return e.into_response(),
+        };
 
     let mut multipart = match api_helpers::multipart_from_body(method, headers, body).await {
         Ok(m) => m,
@@ -147,11 +142,7 @@ async fn handle_upload(
     }
 }
 
-async fn handle_create_snapshot(
-    state: &FormatState,
-    config: &RepoConfig,
-    body: Body,
-) -> Response {
+async fn handle_create_snapshot(state: &FormatState, config: &RepoConfig, body: Body) -> Response {
     let bytes = match api_helpers::body_to_bytes(body, usize::MAX).await {
         Ok(b) => b,
         Err(e) => return e,
@@ -184,7 +175,10 @@ async fn handle_create_snapshot(
     }
 
     let signing_key = store.get_signing_key().await.unwrap_or(None);
-    match store.create_snapshot(&req.name, signing_key.as_deref()).await {
+    match store
+        .create_snapshot(&req.name, signing_key.as_deref())
+        .await
+    {
         Ok(_) => StatusCode::CREATED.into_response(),
         Err(e) => e.into_response(),
     }

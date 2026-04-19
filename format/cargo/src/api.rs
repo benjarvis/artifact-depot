@@ -130,9 +130,8 @@ pub async fn try_handle_repository_path(
         let filter = query
             .and_then(|q| {
                 q.split('&').find_map(|p| {
-                    p.strip_prefix("q=").map(|v| {
-                        urlencoding::decode(v).unwrap_or_default().into_owned()
-                    })
+                    p.strip_prefix("q=")
+                        .map(|v| urlencoding::decode(v).unwrap_or_default().into_owned())
                 })
             })
             .unwrap_or_default();
@@ -200,8 +199,7 @@ pub async fn try_handle_repository_write(
                     let version = segments[1];
                     if !crate_name.is_empty() && !version.is_empty() {
                         return Some(
-                            handle_set_yanked(state, user, config, crate_name, version, true)
-                                .await,
+                            handle_set_yanked(state, user, config, crate_name, version, true).await,
                         );
                     }
                 }

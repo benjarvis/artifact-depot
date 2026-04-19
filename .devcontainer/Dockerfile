@@ -66,3 +66,15 @@ RUN apt-get update && \
         ruby-full ruby-bundler ruby-dev \
         libffi-dev zlib1g-dev libyaml-dev && \
     rm -rf /var/lib/apt/lists/*
+
+# docker-compose v1 (standalone upstream binary) for docker/standalone +
+# docker/distributed + the observability-screenshots harness.  The host's
+# Docker Engine daemon is reached via the mounted /var/run/docker.sock.
+#
+# We grab the PyInstaller-bundled Linux x86_64 release directly from
+# GitHub rather than the Ubuntu `docker-compose` apt package, which on
+# 24.04 is broken: it imports `distutils` at load time and Python 3.12
+# dropped `distutils` from stdlib.
+RUN curl -fsSL -o /usr/local/bin/docker-compose \
+        "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-Linux-x86_64" && \
+    chmod +x /usr/local/bin/docker-compose

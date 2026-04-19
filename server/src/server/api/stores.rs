@@ -287,6 +287,21 @@ pub async fn create_store(
         Err(e) => return e.into_response(),
     };
 
+    // Reject duplicate names before doing any filesystem / network work.
+    // Reordering this above `instantiate_store` lets idempotent POSTs (e.g.
+    // a seeding script that always tries to create "default") return a
+    // clean 409 even when the request body's `root` happens to be
+    // unwritable from the server process -- the previous order would
+    // surface a misleading 400 EACCES instead of the real conflict.
+    if service::get_store(state.repo.kv.as_ref(), &req.name)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return DepotError::Conflict("store already exists".into()).into_response();
+    }
+
     // Verify connectivity by instantiating the store.
     let blob_store = match instantiate_store(&kind).await {
         Ok(s) => s,

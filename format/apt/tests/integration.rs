@@ -22,7 +22,8 @@ use depot_test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nonexistent_repo_404() {
     let app = TestApp::new().await;
-    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/dists/stable/Release").await;
+    helpers::assert_nonexistent_repo_404(&app, "/repository/no-such-repo/dists/stable/Release")
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -92,7 +93,11 @@ async fn test_upload_and_release() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/repository/apt-rel/dists/stable/Release", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/apt-rel/dists/stable/Release",
+        &token,
+    );
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -116,7 +121,11 @@ async fn test_upload_and_inrelease() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    let req = app.auth_request(Method::GET, "/repository/apt-inrel/dists/stable/InRelease", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/apt-inrel/dists/stable/InRelease",
+        &token,
+    );
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -199,7 +208,11 @@ async fn test_pool_download() {
     let pool_path = filename_line.trim_start_matches("Filename:").trim();
 
     // Download from pool
-    let req = app.auth_request(Method::GET, &format!("/repository/apt-pool/{}", pool_path), &token);
+    let req = app.auth_request(
+        Method::GET,
+        &format!("/repository/apt-pool/{}", pool_path),
+        &token,
+    );
     let (status, downloaded) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, deb, "downloaded .deb should match uploaded");
@@ -314,7 +327,11 @@ async fn test_multi_arch() {
     assert_eq!(status, StatusCode::OK);
 
     // Check Release lists both architectures
-    let req = app.auth_request(Method::GET, "/repository/apt-arch/dists/stable/Release", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/apt-arch/dists/stable/Release",
+        &token,
+    );
     let (_, body) = app.call_raw(req).await;
     let release = String::from_utf8(body).unwrap();
     assert!(release.contains("amd64"), "Release should list amd64");
@@ -470,7 +487,11 @@ async fn test_proxy_pool_download() {
     let pool_path = filename_line.trim_start_matches("Filename:").trim();
 
     // Download through proxy
-    let req = app.auth_request(Method::GET, &format!("/repository/apt-pp/{}", pool_path), &token);
+    let req = app.auth_request(
+        Method::GET,
+        &format!("/repository/apt-pp/{}", pool_path),
+        &token,
+    );
     let (status, downloaded) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, deb, "proxy download should match original");
@@ -766,7 +787,11 @@ async fn test_cleanup_skips_apt_metadata() {
     .unwrap();
 
     // Metadata should still be accessible
-    let req = app.auth_request(Method::GET, "/repository/apt-cleanup/dists/stable/Release", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/apt-cleanup/dists/stable/Release",
+        &token,
+    );
     let (status, _) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -1548,7 +1573,11 @@ async fn test_list_distributions() {
     app.call(req).await;
 
     // List distributions
-    let req = app.auth_request(Method::GET, "/repository/apt-list-dist/distributions", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/apt-list-dist/distributions",
+        &token,
+    );
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let dists: Vec<String> = serde_json::from_slice(&body).unwrap();

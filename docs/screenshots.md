@@ -6,25 +6,6 @@ nav_order: 5
 # UI Screenshots
 {: .no_toc }
 
-A tour of the embedded Vue UI under realistic load. Each screenshot is
-captured by Chromium against a fresh depot instance that's been seeded
-with `depot-bench demo` and is being driven by `depot-bench trickle`,
-so the artifact counts, store sizes, and progress bars in these images
-reflect a working system rather than empty bootstrap state.
-
-To regenerate the images yourself:
-
-```bash
-make screenshots
-```
-
-The harness (`scripts/screenshots.sh`) boots a depot in an isolated
-network namespace, seeds + trickles it, runs the `screenshots`
-Playwright project (`ui/frontend/e2e/screenshots.spec.ts`), and copies
-the resulting PNGs into this directory.
-
----
-
 ## Repositories
 
 The Repositories page is the dashboard. The header summarises totals
@@ -33,7 +14,10 @@ breaks the storage footprint down by repository in a pie chart. Every
 artifact format -- raw, Docker, APT, Yum, PyPI, npm, Cargo, Helm, Go --
 appears in the same flat list with a colour-coded format badge.
 
-![Repositories list with stats header](screenshots/repositories.png)
+<div class="shot-pair">
+  <img src="screenshots/repositories-light.png" alt="Repositories list with stats header (light mode)">
+  <img src="screenshots/repositories-dark.png" alt="Repositories list with stats header (dark mode)">
+</div>
 
 ## Repository detail (Browse)
 
@@ -42,7 +26,10 @@ lazy-loaded; the Size column shows aggregated bytes per directory, and
 the Updated column reflects last-modified times. Hosted, cache, and
 proxy repos all share this layout -- only the top header changes.
 
-![Repository detail browse](screenshots/repository-detail.png)
+<div class="shot-pair">
+  <img src="screenshots/repository-detail-light.png" alt="Repository detail browse (light mode)">
+  <img src="screenshots/repository-detail-dark.png" alt="Repository detail browse (dark mode)">
+</div>
 
 ## Stores
 
@@ -50,7 +37,10 @@ Blob stores are managed independently from repositories. The list shows
 which storage backend each store uses (file or S3), the live blob count
 maintained by GC, and the on-disk total.
 
-![Stores list](screenshots/stores.png)
+<div class="shot-pair">
+  <img src="screenshots/stores-light.png" alt="Stores list (light mode)">
+  <img src="screenshots/stores-dark.png" alt="Stores list (dark mode)">
+</div>
 
 ## Store detail (Browse)
 
@@ -58,7 +48,10 @@ The store detail page exposes the physical content-addressable layout
 underneath -- directories are the first two prefix bytes of each
 BLAKE3 blob ID, with the actual blob files at the leaves.
 
-![Store detail browse](screenshots/store-detail.png)
+<div class="shot-pair">
+  <img src="screenshots/store-detail-light.png" alt="Store detail browse (light mode)">
+  <img src="screenshots/store-detail-dark.png" alt="Store detail browse (dark mode)">
+</div>
 
 ## Tasks
 
@@ -68,7 +61,10 @@ watch them run. Progress bars stream live byte and blob counts; the
 last completed result for each job stays on the page until the next
 run.
 
-![Tasks page with a running integrity check](screenshots/tasks.png)
+<div class="shot-pair">
+  <img src="screenshots/tasks-light.png" alt="Tasks page with a running integrity check (light mode)">
+  <img src="screenshots/tasks-dark.png" alt="Tasks page with a running integrity check (dark mode)">
+</div>
 
 ## Settings
 
@@ -79,7 +75,10 @@ tracing endpoint, and JWT lifetimes. Changes are pushed to the
 settings handle and propagated to every cluster instance within the
 30-second refresh window.
 
-![Settings page](screenshots/settings.png)
+<div class="shot-pair">
+  <img src="screenshots/settings-light.png" alt="Settings page (light mode)">
+  <img src="screenshots/settings-dark.png" alt="Settings page (dark mode)">
+</div>
 
 ## API documentation
 
@@ -88,4 +87,7 @@ endpoint can be expanded to inspect parameters, request bodies,
 response schemas, and try-it-now interactively against the live
 server.
 
-![Swagger UI](screenshots/api-docs.png)
+<div class="shot-pair">
+  <img src="screenshots/api-docs-light.png" alt="Swagger UI (light mode)">
+  <img src="screenshots/api-docs-dark.png" alt="Swagger UI (dark mode)">
+</div>

@@ -37,7 +37,11 @@ async fn test_non_pypi_repo_400() {
     // rather than 400 — URL shape is no longer tied to format.
     let app = TestApp::new().await;
     app.create_hosted_repo("raw-repo").await;
-    let req = app.auth_request(Method::GET, "/repository/raw-repo/simple/", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/raw-repo/simple/",
+        &app.admin_token(),
+    );
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -308,7 +312,11 @@ async fn test_hosted_index_empty() {
     let app = TestApp::new().await;
     app.create_pypi_repo("pypi-empty").await;
 
-    let req = app.auth_request(Method::GET, "/repository/pypi-empty/simple/", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/pypi-empty/simple/",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = body.as_str().unwrap_or("");
@@ -345,7 +353,11 @@ async fn test_hosted_index_lists_projects() {
     );
     let _ = app.call(req).await;
 
-    let req = app.auth_request(Method::GET, "/repository/pypi-idx/simple/", &app.admin_token());
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/pypi-idx/simple/",
+        &app.admin_token(),
+    );
     let (status, body) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
     let text = body.as_str().unwrap_or("");
@@ -1565,7 +1577,11 @@ async fn test_upload_wheel_and_sdist_for_same_version() {
 
     // Simple project page should list both files.
     let token = app.admin_token();
-    let req = app.auth_request(Method::GET, "/repository/pypi-multi-file/simple/my-pkg/", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/pypi-multi-file/simple/my-pkg/",
+        &token,
+    );
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8(body.to_vec()).unwrap();

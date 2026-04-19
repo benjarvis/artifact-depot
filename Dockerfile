@@ -37,6 +37,14 @@ RUN RUST_TARGET=$(cat /rust-target) \
 # by the unprivileged user (scratch has no mkdir/chown).
 RUN mkdir -p /data-layout/kv /data-layout/blobs
 
+# Pre-create the data directory so it exists in the runtime image with the
+# correct ownership.  Without this, the empty `VOLUME /depot` declaration
+# below would let Docker create the path on the fly at first mount, owned
+# by root, and our non-root server (uid 65534) would fail with EACCES on
+# its first redb open / blob write.  The placeholder file forces COPY to
+# materialise the directory.
+RUN mkdir -p /out/depot && touch /out/depot/.keep
+
 # Generate a default config baked into the image so the container is usable
 # with just `docker run`. Users can override by bind-mounting their own config
 # at /etc/depot/depotd.toml.

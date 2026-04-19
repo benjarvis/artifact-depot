@@ -2384,7 +2384,10 @@ async fn test_npm_publish_and_packument() {
     let http = reqwest::Client::new();
     let token = get_auth_token(&_server.url).await;
     let resp = http
-        .get(format!("{}/repository/npm-int-hosted/hello-world", _server.url))
+        .get(format!(
+            "{}/repository/npm-int-hosted/hello-world",
+            _server.url
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -2461,7 +2464,10 @@ async fn test_npm_scoped_package() {
     let http = reqwest::Client::new();
     let token = get_auth_token(&_server.url).await;
     let resp = http
-        .get(format!("{}/repository/npm-int-scoped/@myorg/widget", _server.url))
+        .get(format!(
+            "{}/repository/npm-int-scoped/@myorg/widget",
+            _server.url
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -2526,7 +2532,10 @@ async fn test_npm_search() {
 
     // Search with no text (returns all)
     let resp = http
-        .get(format!("{}/repository/npm-int-search/-/v1/search", _server.url))
+        .get(format!(
+            "{}/repository/npm-int-search/-/v1/search",
+            _server.url
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -2692,7 +2701,10 @@ async fn test_npm_cache_repo_fetches_from_upstream() {
 
     // Package not in upstream → 404 through cache
     let resp = http
-        .get(format!("{}/repository/npm-cache/nonexistent-pkg", _server.url))
+        .get(format!(
+            "{}/repository/npm-cache/nonexistent-pkg",
+            _server.url
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -2863,7 +2875,10 @@ async fn test_npm_proxy_with_cache_member() {
 
     // Fetch local-only package through proxy
     let resp = http
-        .get(format!("{}/repository/npm-prx-group/local-only", _server.url))
+        .get(format!(
+            "{}/repository/npm-prx-group/local-only",
+            _server.url
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -2942,7 +2957,10 @@ async fn test_npm_demo_seeding() {
 
     // Check that packages were published
     let resp = http
-        .get(format!("{}/repository/npm-packages/-/v1/search", _server.url))
+        .get(format!(
+            "{}/repository/npm-packages/-/v1/search",
+            _server.url
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -2958,7 +2976,10 @@ async fn test_npm_demo_seeding() {
 
     // Verify a specific package has multiple versions
     let resp = http
-        .get(format!("{}/repository/npm-packages/hello-world", _server.url))
+        .get(format!(
+            "{}/repository/npm-packages/hello-world",
+            _server.url
+        ))
         .bearer_auth(&token)
         .send()
         .await
