@@ -16,6 +16,7 @@ use depot_core::format_state::FormatState;
 use super::blobs::{do_get_blob, do_head_blob};
 use super::helpers::docker_unauthorized_response;
 use super::manifests::{do_delete_manifest, do_get_manifest, do_head_manifest, do_put_manifest};
+use super::referrers::{do_get_referrers, ReferrersQuery};
 use super::tags::do_list_tags;
 use super::types::{
     CompleteUploadParams, DockerPaginationParams, DockerPath, TokenFormParams, TokenParams,
@@ -182,6 +183,26 @@ pub async fn put_manifest(
         &headers,
         &body,
         None,
+    )
+    .await
+}
+
+pub async fn get_referrers(
+    State(state): State<FormatState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    dp: DockerPath,
+    headers: HeaderMap,
+    Query(query): Query<ReferrersQuery>,
+) -> Response {
+    do_get_referrers(
+        &state,
+        &user.0,
+        &dp.repo,
+        dp.image.as_deref(),
+        dp.param("digest"),
+        &headers,
+        None,
+        &query,
     )
     .await
 }

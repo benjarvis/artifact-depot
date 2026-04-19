@@ -15,6 +15,7 @@ mod meta;
 pub mod pagination;
 mod repo;
 pub mod scan;
+mod scanner;
 mod store;
 pub mod task;
 mod typed;
@@ -36,6 +37,11 @@ pub use repo::{
     list_repos_raw, propagate_staleness, put_repo,
 };
 pub use scan::{BG_SHARD_CONCURRENCY, SHARD_CONCURRENCY};
+pub use scanner::{
+    delete_sbom_record, delete_scan_job, delete_scan_result, enqueue_scan_job, get_sbom_record,
+    get_scan_result, list_oci_referrers, peek_scan_queue, put_oci_referrer, put_sbom_record,
+    put_scan_result,
+};
 pub use store::{
     delete_store, delete_store_stats, get_store, get_store_stats, list_stores, put_store,
     put_store_stats,

@@ -8,6 +8,7 @@ members = [
     "kv/*",
     "blob/*",
     "format/*",
+    "scanner/*",
 ]
 resolver = "2"
 

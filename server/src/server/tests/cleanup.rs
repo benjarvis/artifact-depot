@@ -157,6 +157,7 @@ async fn test_cleanup_no_policy_skips() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &config).await;
 
@@ -219,6 +220,7 @@ async fn test_cleanup_max_age_deletes_old() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: Some(1), // 1 day
         deleting: false,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &config).await;
 
@@ -274,6 +276,7 @@ async fn test_cleanup_max_unaccessed_deletes_stale() {
         cleanup_max_unaccessed_days: Some(1),
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &config).await;
 
@@ -329,6 +332,7 @@ async fn test_cleanup_multiple_repos() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: Some(1),
         deleting: false,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &config_a).await;
 
@@ -345,6 +349,7 @@ async fn test_cleanup_multiple_repos() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &config_b).await;
 
@@ -395,6 +400,7 @@ fn docker_repo_config(name: &str, cleanup_untagged: bool) -> RepoConfig {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     }
 }
 
@@ -1033,6 +1039,7 @@ async fn test_gc_both_cleanup_policies() {
         cleanup_max_unaccessed_days: Some(7),
         cleanup_max_age_days: Some(30),
         deleting: false,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &config).await;
 
@@ -1104,6 +1111,7 @@ async fn test_drain_deleting_repos() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: true,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &config).await;
 
@@ -1149,6 +1157,7 @@ async fn test_drain_deleting_repos_skips_active() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &active).await;
 
@@ -1165,6 +1174,7 @@ async fn test_drain_deleting_repos_skips_active() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: true,
+        scan_enabled: false,
     };
     svc_put_repo(kv.as_ref(), &dying).await;
 
@@ -1328,6 +1338,7 @@ async fn test_cleanup_tick_drain_error() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: true,
+        scan_enabled: false,
     };
     svc_put_repo(real_kv.as_ref(), &config).await;
     let rec = make_record(now_utc(), now_utc());

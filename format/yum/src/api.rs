@@ -54,7 +54,7 @@ pub async fn upload(
     Path(repo_name): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Response, DepotError> {
-    let (_target_repo, target_config, blobs) =
+    let (target_repo, target_config, blobs) =
         api_helpers::upload_preamble(&state, &user.0, &repo_name, ArtifactFormat::Yum).await?;
 
     let mut blob_info: Option<(String, String, String, String, u64)> = None; // (filename, blob_id, blake3, sha256, size)
@@ -90,6 +90,15 @@ pub async fn upload(
         .await
     {
         Ok(_) => {
+            state
+                .maybe_enqueue_scan(
+                    target_config.scan_enabled,
+                    &blake3,
+                    ArtifactFormat::Yum,
+                    &target_repo,
+                )
+                .await;
+
             api_helpers::propagate_staleness_to_parents(
                 &state,
                 &repo_name,

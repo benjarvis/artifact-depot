@@ -129,6 +129,15 @@ pub async fn list_live_instances(kv: &dyn KvStore) -> anyhow::Result<Vec<Instanc
 /// Well-known lease name for the blob garbage collector.
 pub const LEASE_GC: &str = "gc";
 
+/// Lease held by the single instance draining the scan queue at any one
+/// time. Running one queue drainer per cluster keeps per-blob scan
+/// deduplication simple in v1.
+pub const LEASE_SCANNER: &str = "scanner";
+
+/// Lease held by the single instance responsible for scheduling stale
+/// rescans (DB-version sweep + age-based rescans).
+pub const LEASE_SCAN_SCHEDULER: &str = "scan_scheduler";
+
 /// Try to acquire or renew a named lease.
 ///
 /// Returns `true` if this instance now holds the lease. The caller decides

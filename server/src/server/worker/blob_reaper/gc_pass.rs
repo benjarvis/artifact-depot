@@ -498,6 +498,14 @@ pub async fn gc_pass(
                             del_sks.iter().map(|sk| (pk.as_str(), *sk)).collect();
                         kv.delete_batch(keys::TABLE_BLOBS, &del_keys).await?;
                         local_deleted += del_sks.len() as u64;
+
+                        // Cascade: remove scan results and SBOM records that
+                        // reference the deleted blobs. Sort keys in TABLE_BLOBS
+                        // are BLAKE3 hashes.
+                        for sk in &del_sks {
+                            let _ = service::delete_scan_result(kv.as_ref(), "trivy", sk).await;
+                            let _ = service::delete_sbom_record(kv.as_ref(), sk).await;
+                        }
                     }
 
                     if result.done {

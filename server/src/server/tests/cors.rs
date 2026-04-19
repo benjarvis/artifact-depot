@@ -126,6 +126,7 @@ async fn app_with_cors(cors: Option<CorsConfig>) -> axum::Router {
             http: reqwest::Client::new(),
             inflight: depot_core::inflight::InflightMap::new(),
             updater: depot_core::update::UpdateSender::noop(),
+            scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
         },
         auth: crate::server::AuthServices {
             backend: auth,

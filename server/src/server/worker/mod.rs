@@ -10,5 +10,6 @@ pub mod cleanup;
 pub mod cluster;
 pub mod docker_listeners;
 pub mod materializer;
+pub mod scanner;
 pub mod state_scanner;
 pub mod update;

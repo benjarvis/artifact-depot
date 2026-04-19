@@ -313,6 +313,58 @@ pub struct Config {
     /// (no users yet). Ignored on already-initialized clusters.
     #[serde(default, skip_serializing)]
     pub initialization: Option<init::InitializationConfig>,
+
+    /// Vulnerability scanner backend configuration. When omitted, scanning
+    /// is disabled — the queue exists but no worker drains it.
+    #[serde(default)]
+    pub scanner: Option<ScannerConfig>,
+}
+
+/// Top-level scanner configuration. v1 only supports a single Trivy backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScannerConfig {
+    /// Trivy backend configuration. Required when `[scanner]` is present.
+    pub trivy: TrivyConfigToml,
+}
+
+/// TOML-friendly mirror of [`depot_scanner_trivy::TrivyConfig`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrivyConfigToml {
+    /// URL of the user-operated `trivy server`.
+    pub server_url: String,
+    /// Path to the `trivy` binary. Defaults to `trivy` on `$PATH`.
+    #[serde(default)]
+    pub binary_path: Option<PathBuf>,
+    /// Maximum concurrent scan subprocesses.
+    #[serde(default = "default_trivy_max_concurrent")]
+    pub max_concurrent: usize,
+    /// Per-scan deadline in seconds.
+    #[serde(default = "default_trivy_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Scratch directory for staging blobs from object storage.
+    #[serde(default)]
+    pub workdir: Option<PathBuf>,
+}
+
+fn default_trivy_max_concurrent() -> usize {
+    depot_scanner_trivy::TrivyConfig::DEFAULT_MAX_CONCURRENT
+}
+
+fn default_trivy_timeout_secs() -> u64 {
+    depot_scanner_trivy::TrivyConfig::DEFAULT_TIMEOUT_SECS
+}
+
+impl TrivyConfigToml {
+    /// Materialise into the runtime [`depot_scanner_trivy::TrivyConfig`].
+    pub fn to_runtime(&self) -> depot_scanner_trivy::TrivyConfig {
+        depot_scanner_trivy::TrivyConfig {
+            binary_path: self.binary_path.clone(),
+            server_url: self.server_url.clone(),
+            max_concurrent: self.max_concurrent,
+            timeout: std::time::Duration::from_secs(self.timeout_secs),
+            workdir: self.workdir.clone().unwrap_or_else(std::env::temp_dir),
+        }
+    }
 }
 
 #[cfg(feature = "ldap")]
@@ -686,6 +738,7 @@ impl Default for Config {
             tracing: None,
             worker_threads: 0,
             initialization: None,
+            scanner: None,
         }
     }
 }
@@ -1281,6 +1334,7 @@ max_artifact_bytes = 12345
             upstream_auth: None,
             content_disposition: None,
             repodata_depth: None,
+            scan_enabled: None,
         }
     }
 

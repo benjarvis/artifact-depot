@@ -47,6 +47,8 @@ pub struct HostedRepo {
     pub updater: UpdateSender,
     pub store: String,
     pub format: String,
+    pub scanner_queue: crate::scanner::ScannerQueueHandle,
+    pub scan_enabled: bool,
 }
 
 impl HostedRepo {
@@ -64,6 +66,8 @@ impl HostedRepo {
             repo: &self.name,
             format: &self.format,
             repo_type: "hosted",
+            scanner_queue: &self.scanner_queue,
+            scan_enabled: self.scan_enabled,
         };
         let IngestionResult { record, old_record } =
             ingest_artifact(&ctx, path, content_type, data).await?;

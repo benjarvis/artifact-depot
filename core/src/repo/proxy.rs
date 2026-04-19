@@ -73,6 +73,9 @@ impl ProxyRepo {
                 http: self.http.clone(),
                 inflight: self.inflight.clone(),
                 updater: self.updater.clone(),
+                // Proxy recursion only reads from members; scan enqueuing
+                // happens at the hosted-write site, not here.
+                scanner_queue: crate::scanner::ScannerQueueHandle::noop(),
             };
             let member_repo = make_raw_repo_with_depth(ctx, &member_config, self.depth + 1);
             let result = member_repo.head(path).await;
@@ -136,6 +139,9 @@ impl ProxyRepo {
                 http: self.http.clone(),
                 inflight: self.inflight.clone(),
                 updater: self.updater.clone(),
+                // Proxy recursion only reads from members; scan enqueuing
+                // happens at the hosted-write site, not here.
+                scanner_queue: crate::scanner::ScannerQueueHandle::noop(),
             };
             let member_repo = make_raw_repo_with_depth(ctx, &member_config, self.depth + 1);
             let result = member_repo.get(path).await;

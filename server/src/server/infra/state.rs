@@ -34,6 +34,9 @@ pub struct RepoServices {
     pub http: reqwest::Client,
     pub inflight: InflightMap,
     pub updater: UpdateSender,
+    /// Queue handle for pushing scan jobs during ingest. Noop in
+    /// deployments with no scanner configured.
+    pub scanner_queue: depot_core::scanner::ScannerQueueHandle,
 }
 
 impl RepoServices {
@@ -56,6 +59,7 @@ impl RepoServices {
             http: self.http.clone(),
             inflight: self.inflight.clone(),
             updater: self.updater.clone(),
+            scanner_queue: self.scanner_queue.clone(),
         }
     }
 }
@@ -147,6 +151,7 @@ impl FromRef<AppState> for FormatState {
             settings: Arc::new(SettingsAdapter {
                 settings: Arc::clone(&state.settings),
             }),
+            scanner_queue: state.repo.scanner_queue.clone(),
         }
     }
 }
@@ -285,6 +290,7 @@ impl AppState {
                 http,
                 inflight: InflightMap::new(),
                 updater: UpdateSender::noop(),
+                scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
             },
             auth: AuthServices {
                 backend: auth,

@@ -237,6 +237,27 @@ async fn async_main(cfg: config::Config) -> anyhow::Result<()> {
         .as_ref()
         .is_some_and(|i| i.users.iter().any(|u| u.username == "admin"));
 
+    // Wire the vulnerability scanner backend, if configured. The handle on
+    // RepoServices is replaced here (it starts as noop in AppState::new) so
+    // every subsequent ingest pushes scan jobs into the KV-backed queue.
+    let scanner_registry = if let Some(ref scanner_cfg) = cfg.scanner {
+        let trivy = std::sync::Arc::new(depot_scanner_trivy::TrivyScanner::new(
+            scanner_cfg.trivy.to_runtime(),
+        ));
+        let registry = depot_core::scanner::ScannerRegistry::from_backends(vec![
+            trivy as std::sync::Arc<dyn depot_core::scanner::Scanner>,
+        ]);
+        state.repo.scanner_queue =
+            depot_core::scanner::ScannerQueueHandle::kv_backed(state.repo.kv.clone());
+        tracing::info!(
+            scanner_url = %scanner_cfg.trivy.server_url,
+            "trivy scanner backend wired"
+        );
+        registry
+    } else {
+        depot_core::scanner::ScannerRegistry::empty()
+    };
+
     // Bootstrap roles if none exist.
     if server::config::bootstrap::bootstrap_roles(state.repo.kv.as_ref()).await? {
         eprintln!("  Roles bootstrapped: admin, read-only");
@@ -469,6 +490,52 @@ async fn async_main(cfg: config::Config) -> anyhow::Result<()> {
         ));
         worker_handles.push(("cleanup", h));
         tracing::info!("cleanup loop started");
+    }
+
+    // Spawn scanner worker. No-ops immediately when the registry is empty.
+    {
+        let kv = state.repo.kv.clone();
+        let stores = state.repo.stores.clone();
+        let registry = scanner_registry.clone();
+        let instance_id = state.bg.instance_id.clone();
+        let h = tokio::spawn(server::worker::scanner::run_scan_worker(
+            kv,
+            stores,
+            registry,
+            instance_id,
+            cancel.clone(),
+        ));
+        worker_handles.push(("scanner", h));
+    }
+
+    // Spawn stale-scan scheduler (hourly DB-version sweep).
+    {
+        let kv = state.repo.kv.clone();
+        let registry = scanner_registry.clone();
+        let instance_id = state.bg.instance_id.clone();
+        let h = tokio::spawn(
+            server::worker::scanner::scheduler::run_stale_scan_scheduler(
+                kv,
+                registry,
+                instance_id,
+                cancel.clone(),
+            ),
+        );
+        worker_handles.push(("scan_scheduler", h));
+    }
+
+    // One-shot reconciler: backfill unscanned blobs from scan-enabled repos.
+    if !scanner_registry.is_empty() {
+        let kv = state.repo.kv.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                server::worker::scanner::reconciler::reconcile_missing_scans(kv.as_ref(), "trivy")
+                    .await
+            {
+                tracing::warn!(error = %e, "scan reconciler failed");
+            }
+        });
+        tracing::info!("scanner workers started");
     }
 
     // Spawn supervisor that monitors all background workers for unexpected exits.

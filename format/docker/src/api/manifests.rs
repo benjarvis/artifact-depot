@@ -548,6 +548,7 @@ pub async fn do_put_manifest(
         Ok(c) => c,
         Err(r) => return r,
     };
+    let scan_enabled = config.scan_enabled;
 
     // Determine target repo for writes.
     let (target_repo, target_image) = match config.kind {
@@ -733,6 +734,38 @@ pub async fn do_put_manifest(
 
     match store.put_manifest(reference, content_type, body).await {
         Ok(digest) => {
+            let blake3 = blake3::hash(body).to_hex().to_string();
+            state
+                .maybe_enqueue_scan(scan_enabled, &blake3, ArtifactFormat::Docker, &target_repo)
+                .await;
+
+            // OCI referrers: when the manifest declares a `subject`, record
+            // the referrer relationship so `GET /v2/.../referrers/{digest}`
+            // can list it. This is how cosign/sigstore SBOM attestations
+            // get attached to images.
+            if let Some(subject_digest) = manifest
+                .get("subject")
+                .and_then(|s| s.get("digest"))
+                .and_then(|d| d.as_str())
+            {
+                let artifact_type = manifest
+                    .get("artifactType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(content_type)
+                    .to_string();
+                let referrer_rec = depot_core::store::kv::OciReferrerRecord {
+                    schema_version: depot_core::store::kv::CURRENT_RECORD_VERSION,
+                    subject_digest: subject_digest.to_string(),
+                    referrer_digest: digest.clone(),
+                    artifact_type,
+                    media_type: content_type.to_string(),
+                    size: body.len() as u64,
+                    created_at: chrono::Utc::now(),
+                };
+                let _ =
+                    service::put_oci_referrer(state.kv.as_ref(), &target_repo, &referrer_rec).await;
+            }
+
             let mut resp_headers = HeaderMap::new();
             resp_headers.insert(
                 "Location",

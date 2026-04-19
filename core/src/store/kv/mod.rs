@@ -13,9 +13,10 @@ pub use metadata::{
 };
 pub use records::{
     ArtifactFormat, ArtifactKind, ArtifactRecord, BlobRecord, Capability, CapabilityGrant,
-    ChildrenResult, ContentDisposition, DirEntry, FormatConfig, LeaseRecord, PaginatedResult,
-    Pagination, RepoConfig, RepoKind, RepoStats, RepoType, RoleRecord, StoreKind, StoreRecord,
-    StoreStatsRecord, TaskEventRecord, TaskRecord, TreeEntry, TreeEntryKind, UploadSessionRecord,
-    UpstreamAuth, UserRecord, CURRENT_RECORD_VERSION,
+    ChildrenResult, ContentDisposition, DirEntry, FormatConfig, LeaseRecord, OciReferrerRecord,
+    PaginatedResult, Pagination, RepoConfig, RepoKind, RepoStats, RepoType, RoleRecord, SbomFormat,
+    SbomRecord, SbomSource, ScanResultRecord, StoreKind, StoreRecord, StoreStatsRecord,
+    TaskEventRecord, TaskRecord, TreeEntry, TreeEntryKind, UploadSessionRecord, UpstreamAuth,
+    UserRecord, CURRENT_RECORD_VERSION,
 };
 pub use trait_def::{KvStore, ScanResult};

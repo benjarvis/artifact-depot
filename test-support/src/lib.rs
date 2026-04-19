@@ -183,6 +183,7 @@ async fn test_app_setup() -> TestAppSetup {
             http: reqwest::Client::new(),
             inflight: depot_core::inflight::InflightMap::new(),
             updater: depot_core::update::UpdateSender::noop(),
+            scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
         },
         auth: depot_server::server::AuthServices {
             backend: auth_backend,
@@ -610,6 +611,7 @@ impl TestApp {
             cleanup_max_unaccessed_days: None,
             cleanup_max_age_days: None,
             deleting: false,
+            scan_enabled: false,
         };
         service::put_repo(state.repo.kv.as_ref(), &repo_config)
             .await

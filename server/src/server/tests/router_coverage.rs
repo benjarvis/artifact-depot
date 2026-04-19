@@ -112,6 +112,7 @@ async fn test_router_with_default_docker_repo() {
             cleanup_max_unaccessed_days: None,
             cleanup_max_age_days: None,
             deleting: false,
+            scan_enabled: false,
         },
     )
     .await
@@ -159,6 +160,7 @@ async fn test_router_with_default_docker_repo() {
             http: reqwest::Client::new(),
             inflight: depot_core::inflight::InflightMap::new(),
             updater: depot_core::update::UpdateSender::noop(),
+            scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
         },
         auth: crate::server::AuthServices {
             backend: auth,
@@ -309,6 +311,7 @@ async fn test_router_with_access_log() {
             http: reqwest::Client::new(),
             inflight: depot_core::inflight::InflightMap::new(),
             updater: depot_core::update::UpdateSender::noop(),
+            scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
         },
         auth: crate::server::AuthServices {
             backend: auth,
@@ -494,6 +497,13 @@ const MANAGEMENT_ROUTES: &[(&str, &[&str])] = &[
     ("/api/v1/tasks/scheduler", &["get"]),
     ("/api/v1/tasks/rebuild-dir-entries", &["post"]),
     ("/api/v1/tasks/{id}", &["get", "delete"]),
+    // Scans
+    ("/api/v1/scans/{scanner}/{blob_hash}", &["get"]),
+    ("/api/v1/scans/{scanner}/{blob_hash}/report", &["get"]),
+    ("/api/v1/scans/{scanner}/{blob_hash}/rescan", &["post"]),
+    ("/api/v1/system/scanner", &["get"]),
+    // SBOM sidecar
+    ("/api/v1/repositories/{repo}/sbom/{path}", &["put", "get"]),
     // Streaming
     ("/api/v1/events/stream", &["get"]),
 ];

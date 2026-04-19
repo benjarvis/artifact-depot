@@ -195,6 +195,7 @@ pub async fn apply_initialization(
             cleanup_max_unaccessed_days: req.cleanup_max_unaccessed_days,
             cleanup_max_age_days: req.cleanup_max_age_days,
             deleting: false,
+            scan_enabled: false,
         };
         service::put_repo(state.repo.kv.as_ref(), &cfg).await?;
         summary.repos_created += 1;
@@ -287,6 +288,7 @@ mod tests {
                 http: reqwest::Client::new(),
                 inflight: InflightMap::new(),
                 updater: UpdateSender::noop(),
+                scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
             },
             auth: AuthServices {
                 backend: auth,
@@ -399,6 +401,7 @@ mod tests {
                 upstream_auth: None,
                 content_disposition: None,
                 repodata_depth: None,
+                scan_enabled: None,
             }],
             users: vec![CreateUserRequest {
                 username: "ci".into(),
@@ -506,6 +509,7 @@ mod tests {
                 upstream_auth: None,
                 content_disposition: None,
                 repodata_depth: None,
+                scan_enabled: None,
             }],
             ..InitializationConfig::default()
         };

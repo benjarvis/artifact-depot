@@ -58,6 +58,7 @@ fn new_repo(name: &str) -> RepoConfig {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     }
 }
 

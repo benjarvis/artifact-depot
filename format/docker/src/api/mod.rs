@@ -19,6 +19,7 @@ pub mod dispatch;
 pub mod handlers;
 pub mod helpers;
 pub mod manifests;
+pub mod referrers;
 pub mod routes;
 pub mod tags;
 pub mod types;

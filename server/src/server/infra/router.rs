@@ -13,7 +13,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::server::api::{
-    artifacts, auth as api_auth, backup, nexus_compat, repositories, roles,
+    artifacts, auth as api_auth, backup, nexus_compat, repositories, roles, scans,
     settings as api_settings, stores, system, tasks, users,
 };
 use crate::server::infra::event_stream;
@@ -92,6 +92,13 @@ use depot_format_yum::api as yum;
         tasks::list_tasks,
         tasks::get_task,
         tasks::delete_task,
+        // Scans
+        scans::get_scan,
+        scans::get_scan_report,
+        scans::rescan,
+        scans::scanner_status,
+        scans::put_artifact_sbom,
+        scans::get_artifact_sbom,
         // Streaming
         event_stream::event_stream,
     ),
@@ -154,6 +161,13 @@ use depot_format_yum::api as yum;
         crate::server::infra::task::RebuildDirEntriesResult,
         crate::server::infra::task::BulkDeleteResult,
         crate::server::infra::task::TaskLogEntry,
+        // Scanner
+        scans::ScanResultResponse,
+        scans::ScannerStatusResponse,
+        depot_core::scanner::ScanStatus,
+        depot_core::scanner::Severity,
+        depot_core::scanner::SeverityCounts,
+        depot_core::scanner::ScannerHealth,
     )),
     tags(
         (name = "system", description = "System operations"),
@@ -166,6 +180,7 @@ use depot_format_yum::api as yum;
         (name = "settings", description = "Cluster-wide settings"),
         (name = "backup", description = "Backup and restore"),
         (name = "tasks", description = "Background task management"),
+        (name = "scans", description = "Vulnerability scan results"),
         (name = "streaming", description = "Real-time SSE event streams"),
     )
 )]
@@ -302,6 +317,22 @@ pub fn build_router(state: AppState, metrics_handle: Option<PrometheusHandle>) -
             "/api/v1/tasks/{id}",
             get(tasks::get_task).delete(tasks::delete_task),
         )
+        // Scan results
+        .route("/api/v1/scans/{scanner}/{blob_hash}", get(scans::get_scan))
+        .route(
+            "/api/v1/scans/{scanner}/{blob_hash}/report",
+            get(scans::get_scan_report),
+        )
+        .route(
+            "/api/v1/scans/{scanner}/{blob_hash}/rescan",
+            post(scans::rescan),
+        )
+        .route("/api/v1/system/scanner", get(scans::scanner_status))
+        // SBOM sidecar upload / retrieval
+        .route(
+            "/api/v1/repositories/{repo}/sbom/{*path}",
+            put(scans::put_artifact_sbom).get(scans::get_artifact_sbom),
+        )
         // Model event stream (real-time data model for the UI)
         .route("/api/v1/events/stream", get(event_stream::event_stream))
         // Nexus-compatible REST API
@@ -360,7 +391,13 @@ pub fn build_router(state: AppState, metrics_handle: Option<PrometheusHandle>) -
         .route(
             "/v2/{name}/blobs/{digest}",
             head(docker::head_blob).get(docker::get_blob),
-        );
+        )
+        // OCI referrers API
+        .route(
+            "/v2/{repo}/{image}/referrers/{digest}",
+            get(docker::get_referrers),
+        )
+        .route("/v2/{name}/referrers/{digest}", get(docker::get_referrers));
 
     // Manifest routes — 32 MiB (PUT sends JSON manifests; HEAD/GET/DELETE have no body).
     let docker_manifest_routes = Router::new()

@@ -75,6 +75,7 @@ fn make_hosted_repo(name: &str) -> RepoConfig {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     }
 }
 
@@ -95,6 +96,7 @@ fn make_cache_repo(name: &str, url: &str, ttl: u64) -> RepoConfig {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     }
 }
 
@@ -114,6 +116,7 @@ fn make_proxy_repo(name: &str, members: Vec<String>) -> RepoConfig {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     }
 }
 
@@ -131,6 +134,8 @@ async fn hosted_put_and_get() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     repo.put("file.txt", "text/plain", b"hello world")
         .await
@@ -151,6 +156,8 @@ async fn hosted_get_nonexistent() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     assert!(repo.get("nope.txt").await.unwrap().is_none());
 }
@@ -165,6 +172,8 @@ async fn hosted_put_replaces_existing() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     repo.put("file.txt", "text/plain", b"v1").await.unwrap();
     repo.put("file.txt", "text/plain", b"v2-updated")
@@ -185,6 +194,8 @@ async fn hosted_delete_existing() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     repo.put("file.txt", "text/plain", b"hello").await.unwrap();
     assert!(repo.delete("file.txt").await.unwrap());
@@ -201,6 +212,8 @@ async fn hosted_delete_nonexistent() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     assert!(!repo.delete("nope.txt").await.unwrap());
 }
@@ -215,6 +228,8 @@ async fn hosted_list_prefix() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     repo.put("docs/a.txt", "text/plain", b"a").await.unwrap();
     repo.put("docs/b.txt", "text/plain", b"b").await.unwrap();
@@ -237,6 +252,8 @@ async fn hosted_list_empty() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     let list = repo.list("", &Pagination::default()).await.unwrap();
     assert!(list.items.is_empty());
@@ -252,6 +269,8 @@ async fn hosted_search() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     repo.put("docs/README.md", "text/plain", b"readme")
         .await
@@ -286,6 +305,8 @@ async fn proxy_get_from_single_hosted() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     hosted
         .put("file.txt", "text/plain", b"content")
@@ -327,6 +348,8 @@ async fn proxy_get_returns_first_hit() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h1.put("file.txt", "text/plain", b"from-h1").await.unwrap();
 
@@ -337,6 +360,8 @@ async fn proxy_get_returns_first_hit() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h2.put("file.txt", "text/plain", b"from-h2").await.unwrap();
 
@@ -377,6 +402,8 @@ async fn proxy_get_falls_through() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h2.put("file.txt", "text/plain", b"from-h2").await.unwrap();
 
@@ -412,6 +439,8 @@ async fn proxy_get_skips_missing_member() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h1.put("file.txt", "text/plain", b"found").await.unwrap();
 
@@ -496,6 +525,8 @@ async fn proxy_get_nested_proxy() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h1.put("deep.txt", "text/plain", b"nested").await.unwrap();
 
@@ -532,6 +563,7 @@ async fn proxy_get_from_cache_local_hit() {
 
     // Directly ingest into the cache repo's local store
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -539,6 +571,8 @@ async fn proxy_get_from_cache_local_hit() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "file.txt", "text/plain", b"cached")
             .await
@@ -580,6 +614,8 @@ async fn proxy_list_union() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h1.put("a.txt", "text/plain", b"a").await.unwrap();
 
@@ -590,6 +626,8 @@ async fn proxy_list_union() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h2.put("b.txt", "text/plain", b"b").await.unwrap();
 
@@ -629,6 +667,8 @@ async fn proxy_list_dedup() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h1.put("same.txt", "text/plain", b"v1").await.unwrap();
 
@@ -639,6 +679,8 @@ async fn proxy_list_dedup() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h2.put("same.txt", "text/plain", b"v2").await.unwrap();
 
@@ -703,6 +745,8 @@ async fn proxy_search_union_dedup() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h1.put("readme.md", "text/plain", b"a").await.unwrap();
     h1.put("unique-h1.txt", "text/plain", b"b").await.unwrap();
@@ -714,6 +758,8 @@ async fn proxy_search_union_dedup() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h2.put("readme.md", "text/plain", b"c").await.unwrap();
     h2.put("notes.txt", "text/plain", b"d").await.unwrap();
@@ -753,6 +799,8 @@ async fn proxy_search_no_results() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     h1.put("file.txt", "text/plain", b"a").await.unwrap();
 
@@ -792,6 +840,8 @@ async fn proxy_list_pagination_basic() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     for i in 0..5 {
         h1.put(
@@ -810,6 +860,8 @@ async fn proxy_list_pagination_basic() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     for i in 0..5 {
         h2.put(
@@ -887,6 +939,8 @@ async fn proxy_search_pagination_basic() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     for i in 0..4 {
         h1.put(&format!("doc-{i}.txt"), "text/plain", b"x")
@@ -901,6 +955,8 @@ async fn proxy_search_pagination_basic() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     for i in 4..8 {
         h2.put(&format!("doc-{i}.txt"), "text/plain", b"x")
@@ -970,6 +1026,8 @@ async fn proxy_list_pagination_dedup() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     let h2 = HostedRepo {
         name: "h2".into(),
@@ -978,6 +1036,8 @@ async fn proxy_list_pagination_dedup() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     for i in 0..3 {
         h1.put(&format!("shared-{i}.txt"), "text/plain", b"h1")
@@ -1060,6 +1120,8 @@ async fn proxy_list_pagination_exhausted_member() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     for i in 0..2 {
         h1.put(&format!("h1-{i}.txt"), "text/plain", b"a")
@@ -1074,6 +1136,8 @@ async fn proxy_list_pagination_exhausted_member() {
         updater: UpdateSender::noop(),
         store: "default".into(),
         format: "raw".into(),
+        scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
+        scan_enabled: false,
     };
     for i in 0..8 {
         h2.put(&format!("h2-{i}.txt"), "text/plain", b"b")
@@ -1164,6 +1228,7 @@ async fn cache_get_local_hit_infinite_ttl() {
 
     // Pre-populate cache locally
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1171,6 +1236,8 @@ async fn cache_get_local_hit_infinite_ttl() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "file.txt", "text/plain", b"cached")
             .await
@@ -1201,6 +1268,7 @@ async fn cache_get_local_hit_not_expired() {
     let http = reqwest::Client::new();
 
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1208,6 +1276,8 @@ async fn cache_get_local_hit_not_expired() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "file.txt", "text/plain", b"fresh")
             .await
@@ -1253,6 +1323,7 @@ async fn cache_get_expired_refetches() {
 
     // Pre-populate with old data and backdate updated_at
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1260,6 +1331,8 @@ async fn cache_get_expired_refetches() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "file.txt", "text/plain", b"stale")
             .await
@@ -1464,6 +1537,7 @@ async fn cache_get_upstream_error_serves_stale() {
 
     // Pre-populate cache and backdate to force expiry
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1471,6 +1545,8 @@ async fn cache_get_upstream_error_serves_stale() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "file.txt", "text/plain", b"stale-data")
             .await
@@ -1510,6 +1586,7 @@ async fn cache_get_upstream_network_error_serves_stale() {
 
     // Pre-populate cache and backdate to force expiry
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1517,6 +1594,8 @@ async fn cache_get_upstream_network_error_serves_stale() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "file.txt", "text/plain", b"stale-net")
             .await
@@ -1591,6 +1670,7 @@ async fn cache_list_local_only() {
     let (kv, blobs, _dir) = test_kv().await;
 
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1598,12 +1678,15 @@ async fn cache_list_local_only() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "a.txt", "text/plain", b"a")
             .await
             .unwrap();
     }
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1611,6 +1694,8 @@ async fn cache_list_local_only() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "b.txt", "text/plain", b"b")
             .await
@@ -1641,6 +1726,7 @@ async fn cache_search_local_only() {
     let (kv, blobs, _dir) = test_kv().await;
 
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1648,12 +1734,15 @@ async fn cache_search_local_only() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "readme.md", "text/plain", b"r")
             .await
             .unwrap();
     }
     {
+        let _sq = depot_core::scanner::ScannerQueueHandle::noop();
         let ctx = IngestionCtx {
             kv: kv.as_ref(),
             blobs: blobs.as_ref(),
@@ -1661,6 +1750,8 @@ async fn cache_search_local_only() {
             repo: "cache1",
             format: "raw",
             repo_type: "cache",
+            scanner_queue: &_sq,
+            scan_enabled: false,
         };
         depot_core::repo::ingest_artifact(&ctx, "other.txt", "text/plain", b"o")
             .await

@@ -29,6 +29,7 @@ depot-format-pypi = { path = "../format/pypi" }
 depot-format-yum = { path = "../format/yum" }
 depot-kv-dynamo = { path = "../kv/dynamo", optional = true }
 depot-kv-redb = { path = "../kv/redb" }
+depot-scanner-trivy = { path = "../scanner/trivy" }
 depot-ui = { path = "../ui" }
 
 # Shared

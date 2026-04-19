@@ -1140,6 +1140,8 @@ pub async fn put_artifact(
         repo: &target_repo,
         format: &format,
         repo_type: "hosted",
+        scanner_queue: &state.repo.scanner_queue,
+        scan_enabled: repo_config.scan_enabled,
     };
 
     let kv_start = std::time::Instant::now();
@@ -1296,6 +1298,8 @@ pub async fn delete_artifact(
             updater: state.repo.updater.clone(),
             store: config.store.clone(),
             format: config.format().to_string(),
+            scanner_queue: state.repo.scanner_queue.clone(),
+            scan_enabled: config.scan_enabled,
         };
         match hosted.delete(&path).await {
             Ok(true) => found = true,

@@ -43,6 +43,8 @@ pub struct CreateRepoRequest {
     pub upstream_auth: Option<UpstreamAuth>,
     pub content_disposition: Option<ContentDisposition>,
     pub repodata_depth: Option<u32>,
+    #[serde(default)]
+    pub scan_enabled: Option<bool>,
 }
 
 impl CreateRepoRequest {
@@ -88,6 +90,7 @@ pub struct RepoResponse {
     pub upstream_auth: Option<UpstreamAuth>,
     pub content_disposition: Option<ContentDisposition>,
     pub repodata_depth: Option<u32>,
+    pub scan_enabled: bool,
     #[schema(value_type = String, format = "date-time")]
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub artifact_count: u64,
@@ -158,6 +161,7 @@ impl From<RepoConfig> for RepoResponse {
             upstream_auth,
             content_disposition,
             repodata_depth,
+            scan_enabled: c.scan_enabled,
             created_at: c.created_at,
             artifact_count: 0,
             total_bytes: 0,
@@ -313,6 +317,7 @@ pub async fn create_repo(
         cleanup_max_unaccessed_days: req.cleanup_max_unaccessed_days,
         cleanup_max_age_days: req.cleanup_max_age_days,
         deleting: false,
+        scan_enabled: req.scan_enabled.unwrap_or(false),
     };
 
     if service::get_repo(state.repo.kv.as_ref(), &config.name)
@@ -360,6 +365,8 @@ pub struct UpdateRepoRequest {
     pub content_disposition: Option<ContentDisposition>,
     #[serde(default)]
     pub repodata_depth: Option<u32>,
+    #[serde(default)]
+    pub scan_enabled: Option<bool>,
 }
 
 /// Update a repository's mutable settings.
@@ -497,6 +504,9 @@ pub async fn update_repo(
     // Update shared cleanup fields.
     config.cleanup_max_age_days = req.cleanup_max_age_days;
     config.cleanup_max_unaccessed_days = req.cleanup_max_unaccessed_days;
+    if let Some(scan) = req.scan_enabled {
+        config.scan_enabled = scan;
+    }
 
     // Detect repodata_depth change and trigger rebuild.
     let depth_changed = config.format_config.repodata_depth() != old_repodata_depth;

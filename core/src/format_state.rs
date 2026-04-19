@@ -77,6 +77,9 @@ pub struct FormatState {
     pub updater: UpdateSender,
     pub auth: Arc<dyn PermissionChecker>,
     pub settings: Arc<dyn FormatSettings>,
+    /// Queue handle for pushing scan jobs from format-specific commit paths.
+    /// Noop in deployments with no scanner configured.
+    pub scanner_queue: crate::scanner::ScannerQueueHandle,
 }
 
 impl FormatState {
@@ -89,5 +92,32 @@ impl FormatState {
         self.stores.get(store_name).await.ok_or_else(|| {
             crate::error::DepotError::NotFound(format!("blob store '{}' not found", store_name))
         })
+    }
+
+    /// Best-effort scan enqueue for format-specific commit paths.
+    ///
+    /// Gated on `scan_enabled` (from `RepoConfig`). No-ops when
+    /// `scanner_queue` is noop or `scan_enabled` is false. Callers
+    /// must NOT propagate errors from this — it's fire-and-forget.
+    pub async fn maybe_enqueue_scan(
+        &self,
+        scan_enabled: bool,
+        blob_hash: &str,
+        format: crate::store::kv::ArtifactFormat,
+        repo: &str,
+    ) {
+        if !scan_enabled {
+            return;
+        }
+        let job = crate::scanner::ScanJob {
+            schema_version: crate::store::kv::CURRENT_RECORD_VERSION,
+            scanner: "trivy".to_string(),
+            blob_hash: blob_hash.to_string(),
+            format,
+            repo: repo.to_string(),
+            enqueued_at: chrono::Utc::now(),
+            attempt: 0,
+        };
+        self.scanner_queue.enqueue(job).await;
     }
 }

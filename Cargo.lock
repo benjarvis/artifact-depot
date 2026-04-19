@@ -1814,6 +1814,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "depot-scanner-trivy"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "bytes",
+ "chrono",
+ "depot-core",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "depot-server"
 version = "1.0.0"
 dependencies = [
@@ -1845,6 +1863,7 @@ dependencies = [
  "depot-format-yum",
  "depot-kv-dynamo",
  "depot-kv-redb",
+ "depot-scanner-trivy",
  "depot-test-support",
  "depot-ui",
  "flate2",

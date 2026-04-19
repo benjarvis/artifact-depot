@@ -183,6 +183,7 @@ impl TestServer {
                 http,
                 inflight: InflightMap::new(),
                 updater: UpdateSender::noop(),
+                scanner_queue: depot_core::scanner::ScannerQueueHandle::noop(),
             },
             auth: AuthServices {
                 backend: auth,

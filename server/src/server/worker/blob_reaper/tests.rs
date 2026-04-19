@@ -137,6 +137,7 @@ async fn create_referenced_blob(
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     // put_repo is idempotent for our purposes.
     let _ = service::put_repo(kv, &repo).await;
@@ -604,6 +605,7 @@ async fn gc_internal_artifacts_immune() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: Some(1),
         deleting: false,
+        scan_enabled: false,
     };
     service::put_repo(kv.as_ref(), &repo).await.unwrap();
 
@@ -820,6 +822,7 @@ async fn gc_pass_cancellation() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     service::put_repo(kv.as_ref(), &repo).await.unwrap();
 
@@ -1076,6 +1079,7 @@ async fn clean_repo_artifacts_basic() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: Some(1),
         deleting: false,
+        scan_enabled: false,
     };
     service::put_repo(kv.as_ref(), &repo).await.unwrap();
 
@@ -1153,6 +1157,7 @@ async fn clean_repo_artifacts_scan_error() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: Some(1),
         deleting: false,
+        scan_enabled: false,
     };
     service::put_repo(kv.as_ref(), &repo).await.unwrap();
 
@@ -1187,6 +1192,7 @@ async fn clean_repo_artifacts_with_cancel() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     service::put_repo(kv.as_ref(), &repo).await.unwrap();
 

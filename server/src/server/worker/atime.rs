@@ -197,6 +197,7 @@ mod tests {
             cleanup_max_unaccessed_days: None,
             cleanup_max_age_days: None,
             deleting: false,
+            scan_enabled: false,
         };
         service::put_repo(kv.as_ref(), &config).await.unwrap();
 
@@ -368,6 +369,7 @@ mod tests {
             cleanup_max_unaccessed_days: None,
             cleanup_max_age_days: None,
             deleting: false,
+            scan_enabled: false,
         };
         service::put_repo(kv.as_ref(), &config).await.unwrap();
 
@@ -448,6 +450,7 @@ mod tests {
             cleanup_max_unaccessed_days: None,
             cleanup_max_age_days: None,
             deleting: false,
+            scan_enabled: false,
         };
         service::put_repo(kv.as_ref(), &config).await.unwrap();
 

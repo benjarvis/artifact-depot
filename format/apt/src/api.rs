@@ -43,7 +43,7 @@ pub async fn upload(
     Path(repo_name): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Response, DepotError> {
-    let (_target_repo, target_config, blobs) =
+    let (target_repo, target_config, blobs) =
         api_helpers::upload_preamble(&state, &user.0, &repo_name, ArtifactFormat::Apt).await?;
 
     let mut distribution = None;
@@ -93,6 +93,15 @@ pub async fn upload(
         .await
     {
         Ok(_) => {
+            state
+                .maybe_enqueue_scan(
+                    target_config.scan_enabled,
+                    &blake3,
+                    ArtifactFormat::Apt,
+                    &target_repo,
+                )
+                .await;
+
             let stale_path = format!("_apt/metadata_stale/{distribution}");
             api_helpers::propagate_staleness_to_parents(
                 &state,

@@ -78,3 +78,7 @@ required-features = ["test-support"]
 name = "task_kv"
 path = "tests/task_kv.rs"
 required-features = ["test-support"]
+
+[[test]]
+name = "service_scanner"
+path = "tests/service_scanner.rs"

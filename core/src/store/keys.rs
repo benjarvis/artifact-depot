@@ -24,6 +24,10 @@ pub const TABLE_UPLOAD_SESSIONS: &str = "upload_sessions";
 pub const TABLE_LEASES: &str = "leases";
 pub const TABLE_TASKS: &str = "tasks";
 pub const TABLE_TASK_EVENTS: &str = "task_events";
+pub const TABLE_SCAN_RESULTS: &str = "scan_results";
+pub const TABLE_SBOMS: &str = "sboms";
+pub const TABLE_SCAN_QUEUE: &str = "scan_queue";
+pub const TABLE_OCI_REFERRERS: &str = "oci_referrers";
 
 /// All known table names, used by backends to pre-create tables on startup.
 pub const ALL_TABLES: &[&str] = &[
@@ -39,6 +43,10 @@ pub const ALL_TABLES: &[&str] = &[
     TABLE_LEASES,
     TABLE_TASKS,
     TABLE_TASK_EVENTS,
+    TABLE_SCAN_RESULTS,
+    TABLE_SBOMS,
+    TABLE_SCAN_QUEUE,
+    TABLE_OCI_REFERRERS,
 ];
 
 // --- Key triple type ---
@@ -307,6 +315,84 @@ pub fn task_event_pk(task_id: &str) -> String {
     task_id.to_string()
 }
 
+// --- Scanner key constructors ---
+
+/// Partition-key scope for SBOM records (not tied to a scanner name, so SBOMs
+/// attached by different backends still dedup by target blob hash).
+pub const SBOM_PK_SCOPE: &str = "sbom";
+
+/// Partition key for the scan queue. All pending jobs share a single
+/// partition so the worker can drain in enqueue order.
+pub const SCAN_QUEUE_PK: &str = "pending";
+
+/// Scan result key: sharded by blob hash within a scanner-named scope,
+/// SK = blob hash. Two repos containing the same blob share one record.
+pub fn scan_result_key<'a>(scanner: &str, blob_hash: &'a str) -> KeyTriple<'a> {
+    (
+        TABLE_SCAN_RESULTS,
+        Cow::Owned(sharded_pk(scanner, blob_hash)),
+        Cow::Borrowed(blob_hash),
+    )
+}
+
+/// Scan result shard PK for parallel fan-out scans (e.g. stale-scan sweep).
+pub fn scan_result_shard_pk(scanner: &str, shard: u16) -> String {
+    let mut buf = String::with_capacity(scanner.len() + 4);
+    let _ = write!(buf, "{}/{}", scanner, shard);
+    buf
+}
+
+/// SBOM record key: sharded by target blob hash, SK = blob hash.
+pub fn sbom_key<'a>(blob_hash: &'a str) -> KeyTriple<'a> {
+    (
+        TABLE_SBOMS,
+        Cow::Owned(sharded_pk(SBOM_PK_SCOPE, blob_hash)),
+        Cow::Borrowed(blob_hash),
+    )
+}
+
+/// Scan queue key: single partition, SK = `"{enqueued_at_millis:020}_{blob_hash}"`
+/// so lexicographic iteration yields FIFO order. The `blob_hash` suffix
+/// disambiguates jobs enqueued in the same millisecond.
+pub fn scan_queue_key(enqueued_at_millis: i64, blob_hash: &str) -> KeyTriple<'static> {
+    (
+        TABLE_SCAN_QUEUE,
+        Cow::Borrowed(SCAN_QUEUE_PK),
+        Cow::Owned(format!("{:020}_{}", enqueued_at_millis, blob_hash)),
+    )
+}
+
+/// OCI referrer key: sharded by subject digest, composite SK so a prefix
+/// scan of `"{subject_digest}\0"` returns every referrer of that subject.
+pub fn oci_referrer_key(
+    repo: &str,
+    subject_digest: &str,
+    referrer_digest: &str,
+) -> KeyTriple<'static> {
+    let mut sk = String::with_capacity(subject_digest.len() + 1 + referrer_digest.len());
+    sk.push_str(subject_digest);
+    sk.push('\0');
+    sk.push_str(referrer_digest);
+    (
+        TABLE_OCI_REFERRERS,
+        Cow::Owned(sharded_pk(repo, subject_digest)),
+        Cow::Owned(sk),
+    )
+}
+
+/// PK for scanning every referrer of a subject manifest.
+pub fn oci_referrers_pk(repo: &str, subject_digest: &str) -> String {
+    sharded_pk(repo, subject_digest)
+}
+
+/// SK prefix filtering `scan_prefix` results to a single subject manifest.
+pub fn oci_referrers_sk_prefix(subject_digest: &str) -> String {
+    let mut prefix = String::with_capacity(subject_digest.len() + 1);
+    prefix.push_str(subject_digest);
+    prefix.push('\0');
+    prefix
+}
+
 // --- Prefix range helpers ---
 
 /// Compute the exclusive upper bound for a byte-prefix range scan.
@@ -462,5 +548,72 @@ mod tests {
         assert_eq!(normalize_path("//a//b///c//"), "a/b/c");
         assert_eq!(normalize_path("/a/b/"), "a/b");
         assert_eq!(normalize_path("a//b"), "a/b");
+    }
+
+    #[test]
+    fn scan_result_key_structure() {
+        let (table, pk, sk) = scan_result_key("trivy", "abc123");
+        assert_eq!(table, TABLE_SCAN_RESULTS);
+        assert!(pk.starts_with("trivy/"));
+        assert_eq!(&*sk, "abc123");
+    }
+
+    #[test]
+    fn scan_result_key_dedups_across_scanners() {
+        // Same blob, different scanners → different partitions.
+        let (_, pk_trivy, sk_trivy) = scan_result_key("trivy", "abc");
+        let (_, pk_grype, sk_grype) = scan_result_key("grype", "abc");
+        assert_ne!(pk_trivy, pk_grype);
+        // Sort keys match because the blob is the same.
+        assert_eq!(sk_trivy, sk_grype);
+    }
+
+    #[test]
+    fn sbom_key_structure() {
+        let (table, pk, sk) = sbom_key("abc123");
+        assert_eq!(table, TABLE_SBOMS);
+        assert!(pk.starts_with("sbom/"));
+        assert_eq!(&*sk, "abc123");
+    }
+
+    #[test]
+    fn scan_queue_key_orders_by_timestamp() {
+        let (_, _, sk_early) = scan_queue_key(1_000, "hashA");
+        let (_, _, sk_late) = scan_queue_key(2_000, "hashB");
+        assert!(sk_early < sk_late);
+    }
+
+    #[test]
+    fn scan_queue_key_single_partition() {
+        let (_, pk_a, _) = scan_queue_key(1, "hashA");
+        let (_, pk_b, _) = scan_queue_key(2, "hashB");
+        assert_eq!(pk_a, pk_b);
+        assert_eq!(&*pk_a, SCAN_QUEUE_PK);
+    }
+
+    #[test]
+    fn oci_referrer_key_structure() {
+        let (table, pk, sk) = oci_referrer_key("repo1", "sha256:aaa", "sha256:bbb");
+        assert_eq!(table, TABLE_OCI_REFERRERS);
+        assert!(pk.starts_with("repo1/"));
+        assert_eq!(&*sk, "sha256:aaa\0sha256:bbb");
+    }
+
+    #[test]
+    fn oci_referrers_prefix_filters_by_subject() {
+        // Referrers of two different subjects in the same repo may hash to
+        // the same shard; the SK prefix must disambiguate them.
+        let (_, _, sk_a) = oci_referrer_key("repo1", "sha256:aaa", "sha256:r1");
+        let (_, _, sk_b) = oci_referrer_key("repo1", "sha256:bbb", "sha256:r1");
+        let prefix_a = oci_referrers_sk_prefix("sha256:aaa");
+        assert!(sk_a.starts_with(&prefix_a));
+        assert!(!sk_b.starts_with(&prefix_a));
+    }
+
+    #[test]
+    fn oci_referrers_pk_matches_entry() {
+        let (_, entry_pk, _) = oci_referrer_key("repo1", "sha256:aaa", "sha256:bbb");
+        let listing_pk = oci_referrers_pk("repo1", "sha256:aaa");
+        assert_eq!(listing_pk, *entry_pk);
     }
 }

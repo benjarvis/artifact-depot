@@ -33,6 +33,7 @@ pub mod format_state;
 pub mod inflight;
 #[cfg(feature = "repo")]
 pub mod repo;
+pub mod scanner;
 pub mod service;
 pub mod store;
 pub mod store_registry;

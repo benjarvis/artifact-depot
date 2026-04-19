@@ -43,6 +43,13 @@ pub struct IngestionCtx<'a> {
     pub repo: &'a str,
     pub format: &'a str,
     pub repo_type: &'a str,
+    /// Queue handle for pushing scan jobs after a successful ingest.
+    /// Callers that don't care about scanning pass
+    /// [`crate::scanner::ScannerQueueHandle::noop`].
+    pub scanner_queue: &'a crate::scanner::ScannerQueueHandle,
+    /// When true, the ingest hook pushes a scan job for this artifact's
+    /// blob hash. Mirrors `RepoConfig.scan_enabled`.
+    pub scan_enabled: bool,
 }
 
 /// Pre-computed blob information from a streaming upload.
@@ -63,6 +70,9 @@ pub struct RepoContext {
     pub http: reqwest::Client,
     pub inflight: InflightMap,
     pub updater: UpdateSender,
+    /// Handle for pushing scan jobs during ingestion. Noop when no scanner
+    /// backend is configured in the cluster.
+    pub scanner_queue: crate::scanner::ScannerQueueHandle,
 }
 
 /// A byte-chunk stream for streaming cache miss responses.
@@ -136,6 +146,8 @@ pub fn make_raw_repo_with_depth(
             updater: ctx.updater,
             store: config.store.clone(),
             format: config.format().to_string(),
+            scanner_queue: ctx.scanner_queue,
+            scan_enabled: config.scan_enabled,
         }),
         RepoKind::Cache {
             ref upstream_url,
@@ -393,6 +405,24 @@ pub async fn commit_ingestion(
     } else {
         service::put_artifact(ctx.kv, ctx.repo, path, &record).await?
     };
+
+    // Scan-enqueue hook: if the target repo has scanning enabled, push a
+    // best-effort scan job. The handle is a noop in deployments where no
+    // scanner backend is configured, so this is always safe to invoke.
+    if ctx.scan_enabled {
+        if let Some(format_kind) = crate::store::kv::ArtifactFormat::from_display(ctx.format) {
+            let job = crate::scanner::ScanJob {
+                schema_version: CURRENT_RECORD_VERSION,
+                scanner: "trivy".to_string(),
+                blob_hash: blake3_hash.to_string(),
+                format: format_kind,
+                repo: ctx.repo.to_string(),
+                enqueued_at: now,
+                attempt: 0,
+            };
+            ctx.scanner_queue.enqueue(job).await;
+        }
+    }
 
     let format_owned = ctx.format.to_string();
     let repo_type_owned = ctx.repo_type.to_string();

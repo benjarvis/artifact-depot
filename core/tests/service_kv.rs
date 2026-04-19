@@ -341,6 +341,7 @@ async fn service_batched_delete_repo() {
         cleanup_max_unaccessed_days: None,
         cleanup_max_age_days: None,
         deleting: false,
+        scan_enabled: false,
     };
     service::put_repo(&kv, &config).await.unwrap();
     for i in 0..count {
