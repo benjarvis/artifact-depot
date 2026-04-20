@@ -24,6 +24,9 @@ color_scheme: light
 search_enabled: true
 heading_anchors: true
 
+# Google Analytics.
+ga_tracking: G-1E1WRESFJX
+
 # "Edit this page on GitHub" links.
 gh_edit_link: true
 gh_edit_link_text: Edit this page on GitHub
