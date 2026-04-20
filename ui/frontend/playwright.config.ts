@@ -47,7 +47,7 @@ export default defineConfig({
     // also seeds the depot with realistic data first).
     {
       name: 'screenshots',
-      testMatch: /^e2e\/screenshots\.spec\.ts$/,
+      testMatch: '**/screenshots.spec.ts',
       use: chromiumOptions,
     },
     // Observability screenshots -- drives Chromium at Grafana to capture
@@ -55,7 +55,7 @@ export default defineConfig({
     // Run via `make observability-screenshots`.
     {
       name: 'observability',
-      testMatch: /observability-screenshots\.spec\.ts$/,
+      testMatch: '**/observability-screenshots.spec.ts',
       use: chromiumOptions,
     },
   ],

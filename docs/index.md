@@ -127,13 +127,14 @@ their usual tools and URLs.
 
 - **OpenTelemetry** first class: request spans, KV spans, and blob
   store spans exported via OTLP gRPC, with adaptive rate-limited
-  sampling. Logs are exported on the same OTLP pipeline, sharing
-  trace / span IDs.
+  sampling. Application logs and per-request structured events are
+  exported on the same OTLP pipeline, sharing trace / span IDs.
+  Stdout always gets application logs; per-request events go only to
+  OTLP.
 - **Prometheus metrics** at `/metrics` (or on a dedicated listener).
-- **In-memory log ring buffer** always queryable via
-  `GET /api/v1/logging/events` and the UI's log viewer.
-- Optional **file, Splunk HEC, and S3** log exporters for long-term
-  retention.
+- **Any downstream destination** via the OTel collector: Splunk,
+  S3, file archival, Datadog, Honeycomb, etc. -- just configure the
+  collector's exporters.
 - **Pre-built Grafana dashboards** live alongside the bundled
   Docker Compose and Helm stacks.
 

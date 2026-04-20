@@ -46,14 +46,13 @@ Multiple Depot instances run against shared KV + S3 with no coordination overhea
 - **OpenAPI** -- interactive Swagger UI at `/swagger-ui/`
 - **Backup / restore** -- export and import the full system configuration as a single JSON document
 
-### Observability and Auditing
+### Observability
 
 Artifact Depot has first-class OpenTelemetry support -- logs, traces, and metrics all flow through the same OTLP pipeline, so you can point Depot at any OTel-compatible collector (Grafana Tempo / Loki, Jaeger, Honeycomb, Datadog, etc.) and get end-to-end visibility across a cluster.
 
 - **Tracing** -- OTLP gRPC export of request spans with adaptive rate-limited sampling (default: 100 root traces/sec, configurable). Child KV and blob spans are kept on sampled traces, giving a full waterfall from HTTP handler down to the storage backend. Enable with `[tracing] otlp_endpoint = "http://otel-collector:4317"`.
-- **Logs** -- structured `tracing` events are exported via OTLP alongside traces, so logs and spans share trace / span IDs and correlate automatically. An in-memory ring buffer is always available at `GET /api/v1/logging/events` (and in the UI's log viewer), with optional append-only JSON lines files and Splunk HTTP Event Collector for long-term retention.
+- **Logs** -- application logs go to stdout; per-request structured events are exported via OTLP alongside traces, sharing trace / span IDs so logs and spans correlate automatically. For Splunk, S3, or file archival, route the OTLP stream through an OpenTelemetry collector -- the collector's `splunkhec`, `awss3`, and `file` exporters handle batching, retries, and credentials.
 - **Metrics** -- Prometheus metrics at `/metrics` on the main listener, or on a dedicated listener if `metrics_listen` is set. Tracked metrics include request counts and durations (by route, method, and status), in-flight requests, KV and blob store operation rates and latencies, GC progress, and per-store blob counts and bytes. Pre-built Grafana dashboards live in [`docker/standalone/monitoring/dashboards`](docker/standalone/monitoring/dashboards).
-- **Audit log** -- every mutation (repository, user, role, store, settings) is captured as a structured audit event with actor, resource, before/after snapshots, and HTTP context; events stream through the same log pipeline and are queryable via the API and UI.
 
 ## Getting Started
 

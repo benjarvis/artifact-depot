@@ -127,7 +127,7 @@ curl -u admin:admin -X POST http://localhost:8080/api/v1/repositories \
   -d '{"name":"my-repo","repo_type":"hosted","format":"raw","store":"default"}'
 ```
 
-The `format` field accepts any of: `raw`, `docker`, `pypi`, `apt`, `golang`, `helm`, `cargo`, `yum`, `npm`. The `repo_type` field accepts `hosted`, `cache`, or `proxy`. The `store` field is required and names an existing blob store (see [Configuration -- Blob Store Management](configuration.md#blob-store-management)). Cache repos require `upstream_url` and optionally `cache_ttl_secs` and `upstream_auth`. Proxy repos require `members` (an ordered list of repo names) and optionally `write_member` (which member to route writes to).
+The `format` field accepts any of: `raw`, `docker`, `pypi`, `apt`, `golang`, `helm`, `cargo`, `yum`, `npm`. The `repo_type` field accepts `hosted`, `cache`, or `proxy`. The `store` field is required and names an existing blob store (see [Runtime Settings -- Blob Store Management](runtime-settings.md#blob-store-management)). Cache repos require `upstream_url` and optionally `cache_ttl_secs` and `upstream_auth`. Proxy repos require `members` (an ordered list of repo names) and optionally `write_member` (which member to route writes to).
 
 Clone a repository (instant, no blob data copied -- artifacts in the clone share the same content-addressable blobs as the source):
 

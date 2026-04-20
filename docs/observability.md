@@ -28,8 +28,8 @@ Loki-sourced table at the bottom shows recent structured request logs
 log stream panel tails depot's `depot.request` target.
 
 <div class="shot-pair">
-  <img src="screenshots/observability/depot-overview-light.png" alt="Depot Overview dashboard (light mode)">
-  <img src="screenshots/observability/depot-overview-dark.png" alt="Depot Overview dashboard (dark mode)">
+  <a href="screenshots/observability/depot-overview-light.png" target="_blank"><img src="screenshots/observability/depot-overview-light.png" alt="Depot Overview dashboard (light mode)"></a>
+  <a href="screenshots/observability/depot-overview-dark.png" target="_blank"><img src="screenshots/observability/depot-overview-dark.png" alt="Depot Overview dashboard (dark mode)"></a>
 </div>
 
 ## Loki logs
@@ -42,8 +42,8 @@ resource attribute is set by `[tracing] service_name = "depot"`, so
 queries like `{service_name="depot"}` pick up the full stream.
 
 <div class="shot-pair">
-  <img src="screenshots/observability/loki-logs-light.png" alt="Loki logs stream in Grafana Explore (light mode)">
-  <img src="screenshots/observability/loki-logs-dark.png" alt="Loki logs stream in Grafana Explore (dark mode)">
+  <a href="screenshots/observability/loki-logs-light.png" target="_blank"><img src="screenshots/observability/loki-logs-light.png" alt="Loki logs stream in Grafana Explore (light mode)"></a>
+  <a href="screenshots/observability/loki-logs-dark.png" target="_blank"><img src="screenshots/observability/loki-logs-dark.png" alt="Loki logs stream in Grafana Explore (dark mode)"></a>
 </div>
 
 ## Tempo traces
@@ -57,8 +57,8 @@ the storage backend. TraceQL searches via Grafana's Tempo datasource;
 an empty `{}` query lists every recent trace.
 
 <div class="shot-pair">
-  <img src="screenshots/observability/tempo-search-light.png" alt="Tempo trace search in Grafana Explore (light mode)">
-  <img src="screenshots/observability/tempo-search-dark.png" alt="Tempo trace search in Grafana Explore (dark mode)">
+  <a href="screenshots/observability/tempo-search-light.png" target="_blank"><img src="screenshots/observability/tempo-search-light.png" alt="Tempo trace search in Grafana Explore (light mode)"></a>
+  <a href="screenshots/observability/tempo-search-dark.png" target="_blank"><img src="screenshots/observability/tempo-search-dark.png" alt="Tempo trace search in Grafana Explore (dark mode)"></a>
 </div>
 
 ## Plugging in your own backend
