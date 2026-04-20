@@ -13,6 +13,7 @@ depot-core = { path = "../../core", features = ["http", "repo"] }
 depot-format-apt = { path = "../apt" }
 axum = { version = "0.8", features = ["multipart"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt", "macros"] }
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
 tracing = "0.1"
@@ -27,6 +28,5 @@ flate2 = "1"
 depot-test-support = { path = "../../test-support" }
 tokio = { version = "1", features = ["full", "test-util"] }
 http-body-util = "0.1"
-serde_json = "1"
 axum = "0.8"
 wiremock = "0.6"

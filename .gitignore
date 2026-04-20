@@ -33,3 +33,9 @@ ui/frontend/blobs/
 
 # Config with possible secrets
 /depotd.toml
+
+# Jekyll docs site build
+docs/_site/
+docs/.jekyll-cache/
+docs/.bundle/
+docs/vendor/

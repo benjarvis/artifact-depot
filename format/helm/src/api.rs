@@ -9,10 +9,8 @@
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    Extension,
 };
 use std::collections::BTreeMap;
 use tokio_util::io::ReaderStream;
@@ -72,32 +70,66 @@ fn emit_upstream_event(
 }
 
 // =============================================================================
-// POST /helm/{repo}/upload — upload chart .tgz
+// /repository/{repo}/... dispatch for Helm repos (writes)
 // =============================================================================
 
-pub async fn upload(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-    mut multipart: Multipart,
-) -> Result<Response, DepotError> {
-    let (_target_repo, target_config, blobs) =
-        depot_core::api_helpers::upload_preamble(&state, &user.0, &repo_name, ArtifactFormat::Helm)
-            .await?;
+/// Handle a write request under `/repository/{repo}/<path>` for a Helm repo.
+/// Returns `None` if the (method, path) combination is not a Helm write.
+pub async fn try_handle_repository_write(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Option<Response> {
+    if method == Method::POST && path == "upload" {
+        return Some(handle_upload(state, user, config, method, headers, body).await);
+    }
+    None
+}
+
+async fn handle_upload(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    headers: &HeaderMap,
+    body: Body,
+) -> Response {
+    let (_target_repo, target_config, blobs) = match depot_core::api_helpers::upload_preamble(
+        state,
+        &user.0,
+        &config.name,
+        ArtifactFormat::Helm,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let mut multipart =
+        match depot_core::api_helpers::multipart_from_body(method, headers, body).await {
+            Ok(m) => m,
+            Err(e) => return e,
+        };
 
     let mut blob_info: Option<(String, String, String, u64)> = None;
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
         let field_name = field.name().unwrap_or("").to_string();
         match field_name.as_str() {
-            "chart" => {
-                let r = depot_core::api_helpers::stream_multipart_field_to_blob(
-                    &mut field,
-                    blobs.as_ref(),
-                )
-                .await?;
-                blob_info = Some((r.blob_id, r.blake3, r.sha256, r.size));
-            }
+            "chart" => match depot_core::api_helpers::stream_multipart_field_to_blob(
+                &mut field,
+                blobs.as_ref(),
+            )
+            .await
+            {
+                Ok(r) => blob_info = Some((r.blob_id, r.blake3, r.sha256, r.size)),
+                Err(e) => return e.into_response(),
+            },
             _ => {
                 let _ = field.bytes().await;
             }
@@ -106,32 +138,28 @@ pub async fn upload(
 
     let (blob_id, blake3, sha256, size) = match blob_info {
         Some(info) => info,
-        None => return Err(DepotError::BadRequest("missing 'chart' field".into())),
+        None => return DepotError::BadRequest("missing 'chart' field".into()).into_response(),
     };
 
-    let store = helm_store_from_config(&target_config, &state, blobs.as_ref());
+    let store = helm_store_from_config(&target_config, state, blobs.as_ref());
 
     match store.commit_chart(&blob_id, &blake3, &sha256, size).await {
         Ok(_) => {
             depot_core::api_helpers::propagate_staleness_to_parents(
-                &state,
-                &repo_name,
+                state,
+                &config.name,
                 ArtifactFormat::Helm,
                 "_helm/metadata_stale",
             )
             .await;
-            Ok(StatusCode::OK.into_response())
+            StatusCode::OK.into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "helm upload failed");
-            Err(e)
+            e.into_response()
         }
     }
 }
-
-// =============================================================================
-// GET /helm/{repo}/index.yaml
-// =============================================================================
 
 /// Handle a Helm request arriving on `/repository/{repo}/{path}`.
 /// Dispatches `index.yaml` and `charts/` paths to Helm-specific handlers,
@@ -140,7 +168,9 @@ pub async fn try_handle_repository_path(
     state: &FormatState,
     config: &RepoConfig,
     path: &str,
+    query: Option<&str>,
 ) -> Option<Response> {
+    let _ = query;
     if path == "index.yaml" {
         return Some(match config.repo_type() {
             RepoType::Hosted => hosted_get_index(state, config).await,
@@ -165,40 +195,6 @@ pub async fn try_handle_repository_path(
         });
     }
     None
-}
-
-pub async fn get_index(
-    State(state): State<FormatState>,
-    Path(repo_name): Path<String>,
-) -> Result<Response, DepotError> {
-    let config =
-        depot_core::api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Helm)
-            .await?;
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => hosted_get_index(&state, &config).await,
-        RepoType::Cache => cache_get_index(&state, &config).await,
-        RepoType::Proxy => proxy_get_index(&state, &config).await,
-    })
-}
-
-// =============================================================================
-// GET /helm/{repo}/charts/{filename}
-// =============================================================================
-
-pub async fn download_chart(
-    State(state): State<FormatState>,
-    Path((repo_name, filename)): Path<(String, String)>,
-) -> Result<Response, DepotError> {
-    let config =
-        depot_core::api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Helm)
-            .await?;
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => hosted_download_chart(&state, &config, &filename).await,
-        RepoType::Cache => cache_download_chart(&state, &config, &filename).await,
-        RepoType::Proxy => proxy_download_chart(&state, &config, &filename, 0).await,
-    })
 }
 
 // =============================================================================

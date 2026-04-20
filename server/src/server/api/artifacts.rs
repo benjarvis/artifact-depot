@@ -90,66 +90,37 @@ async fn stream_body_to_blob(
 }
 
 /// Handle POST/PATCH on `/repository/{repo}/{path}` — dispatches Docker V2
-/// paths to Docker handlers; returns 405 for everything else.
-pub async fn docker_v2_any(
+/// paths to Docker handlers and format-specific POSTs (pypi, apt, yum, golang,
+/// helm uploads and snapshots) to their write dispatchers; returns 405 for
+/// everything else.
+pub async fn any_format_request(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
     uri: axum::http::Uri,
     method: axum::http::Method,
-    Path((repo_name, path)): Path<(String, String)>,
+    Path(rest): Path<String>,
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
+    let (repo_name, path) = split_rest(&rest);
     let path = match normalize_artifact_path(&path) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
-    if let Err(perm_err) = state
-        .auth
-        .backend
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await
-    {
-        // For Docker V2 paths, bypass the generic permission error and let
-        // the Docker dispatch return a proper 401 Bearer challenge instead.
-        if path == "v2" || path.starts_with("v2/") {
-            let repo_name_owned = repo_name.clone();
-            if let Ok(Some(rc)) = service::get_repo(state.repo.kv.as_ref(), &repo_name_owned).await
-            {
-                if rc.format() == ArtifactFormat::Docker {
-                    if let Some(resp) =
-                        depot_format_docker::api::dispatch::try_handle_docker_v2_path(
-                            &state.format_state(),
-                            &user.0,
-                            &repo_name,
-                            &path,
-                            &method,
-                            uri.query(),
-                            uri.authority().map(|a| a.as_str()),
-                            &headers,
-                            body,
-                        )
-                        .await
-                    {
-                        return resp;
-                    }
-                }
-            }
-        }
-        return perm_err.into_response();
-    }
-    let repo_name_owned = repo_name.clone();
-    let repo_config = match service::get_repo(state.repo.kv.as_ref(), &repo_name_owned).await {
+
+    let repo_config = match service::get_repo(state.repo.kv.as_ref(), &repo_name).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             return DepotError::NotFound(format!("repository '{}' not found", repo_name))
-                .into_response()
+                .into_response();
         }
         Err(e) => return e.into_response(),
     };
 
-    if repo_config.format() == ArtifactFormat::Docker {
-        if let Some(resp) = depot_format_docker::api::dispatch::try_handle_docker_v2_path(
+    // Docker V2 paths: dispatch before the permission check — Docker handles
+    // its own auth and returns a proper 401 Bearer challenge when needed.
+    if repo_config.format() == ArtifactFormat::Docker && (path == "v2" || path.starts_with("v2/")) {
+        return depot_format_docker::api::dispatch::try_handle_docker_v2_path(
             &state.format_state(),
             &user.0,
             &repo_name,
@@ -161,12 +132,141 @@ pub async fn docker_v2_any(
             body,
         )
         .await
-        {
-            return resp;
-        }
+        .unwrap_or_else(|| {
+            DepotError::NotFound("unrecognized Docker V2 path".to_string()).into_response()
+        });
+    }
+
+    // Format-specific POST writes (pypi upload, apt/yum upload + snapshots,
+    // golang upload, helm upload). Each format's dispatcher runs its own
+    // permission check via `upload_preamble`.
+    if is_format_write_path(repo_config.format(), &method, &path) {
+        return dispatch_format_write(&state, &user, &repo_config, &method, &path, headers, body)
+            .await;
     }
 
     axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response()
+}
+
+/// Returns `true` if this `(format, method, path)` triple is a format-specific
+/// write that should be routed through the format's `try_handle_repository_write`
+/// dispatcher. The caller uses this pre-check to decide whether to move the
+/// request body into the format dispatcher (otherwise the body would be dropped
+/// and the generic handler would have nothing to read).
+pub(crate) fn is_format_write_path(
+    format: ArtifactFormat,
+    method: &axum::http::Method,
+    path: &str,
+) -> bool {
+    use axum::http::Method;
+    match format {
+        ArtifactFormat::Golang => method == Method::POST && path == "upload",
+        ArtifactFormat::Helm => method == Method::POST && path == "upload",
+        ArtifactFormat::PyPI => method == Method::POST && (path.is_empty() || path == "/"),
+        ArtifactFormat::Apt => method == Method::POST && matches!(path, "upload" | "snapshots"),
+        ArtifactFormat::Yum => method == Method::POST && matches!(path, "upload" | "snapshots"),
+        ArtifactFormat::Npm => {
+            let get_whoami = method == Method::GET && path == "-/whoami";
+            let login = method == Method::PUT && path.starts_with("-/user/");
+            // Publish goes to an unscoped "package-name" (no slash) or a scoped
+            // "@scope/package" (exactly one slash, starts with '@').
+            let publish = method == Method::PUT
+                && ((!path.is_empty() && !path.contains('/'))
+                    || (path.starts_with('@') && path.matches('/').count() == 1));
+            get_whoami || login || publish
+        }
+        ArtifactFormat::Cargo => {
+            let publish = method == Method::PUT && path == "api/v1/crates/new";
+            let yank_unyank = path.starts_with("api/v1/crates/")
+                && ((method == Method::DELETE && path.ends_with("/yank"))
+                    || (method == Method::PUT && path.ends_with("/unyank")));
+            publish || yank_unyank
+        }
+        _ => false,
+    }
+}
+
+/// Dispatch a format-specific write request to the matching format crate. The
+/// caller is responsible for gating this with [`is_format_write_path`] — if the
+/// predicate says yes, this function takes ownership of the body and always
+/// returns a response (404 if the format crate unexpectedly returns `None`).
+async fn dispatch_format_write(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &axum::http::Method,
+    path: &str,
+    headers: HeaderMap,
+    body: Body,
+) -> axum::response::Response {
+    let fs = state.format_state();
+    let result = match config.format() {
+        ArtifactFormat::Apt => {
+            depot_format_apt::api::try_handle_repository_write(
+                &fs, user, config, method, path, &headers, body,
+            )
+            .await
+        }
+        ArtifactFormat::Cargo => {
+            depot_format_cargo::api::try_handle_repository_write(
+                &fs, user, config, method, path, &headers, body,
+            )
+            .await
+        }
+        ArtifactFormat::Golang => {
+            depot_format_golang::api::try_handle_repository_write(
+                &fs, user, config, method, path, &headers, body,
+            )
+            .await
+        }
+        ArtifactFormat::Helm => {
+            depot_format_helm::api::try_handle_repository_write(
+                &fs, user, config, method, path, &headers, body,
+            )
+            .await
+        }
+        ArtifactFormat::Npm => {
+            depot_format_npm::api::try_handle_repository_write(
+                &fs, user, config, method, path, &headers, body,
+            )
+            .await
+        }
+        ArtifactFormat::PyPI => {
+            depot_format_pypi::api::try_handle_repository_write(
+                &fs, user, config, method, path, &headers, body,
+            )
+            .await
+        }
+        ArtifactFormat::Yum => {
+            depot_format_yum::api::try_handle_repository_write(
+                &fs, user, config, method, path, &headers, body,
+            )
+            .await
+        }
+        _ => None,
+    };
+    result.unwrap_or_else(|| {
+        DepotError::NotFound(format!(
+            "no handler for {} {} on {:?} repository",
+            method,
+            path,
+            config.format()
+        ))
+        .into_response()
+    })
+}
+
+/// Split the `{*rest}` wildcard capture from `/repository/{*rest}` into
+/// `(repo_name, artifact_path)`. Handles all three shapes produced by clients:
+///
+/// - `/repository/foo`        → rest = `"foo"`        → `("foo", "")`
+/// - `/repository/foo/`       → rest = `"foo/"`       → `("foo", "")`
+/// - `/repository/foo/bar/..` → rest = `"foo/bar/..."`→ `("foo", "bar/...")`
+fn split_rest(rest: &str) -> (String, String) {
+    match rest.split_once('/') {
+        Some((repo, path)) => (repo.to_string(), path.to_string()),
+        None => (rest.to_string(), String::new()),
+    }
 }
 
 /// Normalize an artifact path: collapse `//`, remove `.` segments, reject `..`.
@@ -494,9 +594,10 @@ pub async fn head_artifact(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
     uri: axum::http::Uri,
-    Path((repo_name, path)): Path<(String, String)>,
+    Path(rest): Path<String>,
     request_headers: HeaderMap,
 ) -> impl IntoResponse {
+    let (repo_name, path) = split_rest(&rest);
     let path = match normalize_artifact_path(&path) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -579,25 +680,67 @@ pub async fn head_artifact(
         let fs = state.format_state();
         let format_resp = match repo_config.format() {
             ArtifactFormat::Apt => {
-                depot_format_apt::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_apt::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Helm => {
-                depot_format_helm::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_helm::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::PyPI => {
-                depot_format_pypi::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_pypi::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Yum => {
-                depot_format_yum::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_yum::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Cargo => {
-                depot_format_cargo::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_cargo::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Golang => {
-                depot_format_golang::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_golang::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Npm => {
-                depot_format_npm::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_npm::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             _ => None,
         };
@@ -661,9 +804,10 @@ pub async fn get_artifact(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
     uri: axum::http::Uri,
-    Path((repo_name, path)): Path<(String, String)>,
+    Path(rest): Path<String>,
     request_headers: HeaderMap,
 ) -> impl IntoResponse {
+    let (repo_name, path) = split_rest(&rest);
     let path = match normalize_artifact_path(&path) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -746,31 +890,88 @@ pub async fn get_artifact(
         let fs = state.format_state();
         let format_resp = match repo_config.format() {
             ArtifactFormat::Apt => {
-                depot_format_apt::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_apt::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Helm => {
-                depot_format_helm::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_helm::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::PyPI => {
-                depot_format_pypi::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_pypi::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Yum => {
-                depot_format_yum::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_yum::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Cargo => {
-                depot_format_cargo::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_cargo::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Golang => {
-                depot_format_golang::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_golang::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             ArtifactFormat::Npm => {
-                depot_format_npm::api::try_handle_repository_path(&fs, &repo_config, &path).await
+                depot_format_npm::api::try_handle_repository_path(
+                    &fs,
+                    &repo_config,
+                    &path,
+                    uri.query(),
+                )
+                .await
             }
             _ => None,
         };
         if let Some(resp) = format_resp {
             return resp;
         }
+    }
+
+    // Some format GETs need the authenticated user (e.g. npm's `-/whoami`) and
+    // live on the write dispatcher instead of the read dispatcher.
+    if is_format_write_path(repo_config.format(), &axum::http::Method::GET, &path) {
+        return dispatch_format_write(
+            &state,
+            &user,
+            &repo_config,
+            &axum::http::Method::GET,
+            &path,
+            request_headers,
+            Body::empty(),
+        )
+        .await;
     }
 
     match fetch_artifact(&state, &repo_config, &path).await {
@@ -809,64 +1010,41 @@ pub async fn put_artifact(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
     uri: axum::http::Uri,
-    Path((repo_name, path)): Path<(String, String)>,
+    Path(rest): Path<String>,
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
     let in_flight = UPLOADS_IN_FLIGHT.fetch_add(1, Ordering::Relaxed) + 1;
     gauge!("uploads_in_flight").set(in_flight as f64);
 
+    let (repo_name, path) = split_rest(&rest);
     let path = match normalize_artifact_path(&path) {
         Ok(p) => p,
-        Err(e) => return e.into_response(),
-    };
-    if let Err(perm_err) = state
-        .auth
-        .backend
-        .check_permission(&user.0, &repo_name, Capability::Write)
-        .await
-    {
-        // For Docker V2 paths, bypass the generic permission error and let
-        // the Docker dispatch return a proper 401 Bearer challenge instead.
-        if path == "v2" || path.starts_with("v2/") {
-            let repo_name_owned = repo_name.clone();
-            if let Ok(Some(rc)) = service::get_repo(state.repo.kv.as_ref(), &repo_name_owned).await
-            {
-                if rc.format() == ArtifactFormat::Docker {
-                    if let Some(resp) =
-                        depot_format_docker::api::dispatch::try_handle_docker_v2_path(
-                            &state.format_state(),
-                            &user.0,
-                            &repo_name,
-                            &path,
-                            &axum::http::Method::PUT,
-                            uri.query(),
-                            uri.authority().map(|a| a.as_str()),
-                            &headers,
-                            body,
-                        )
-                        .await
-                    {
-                        return resp;
-                    }
-                }
-            }
+        Err(e) => {
+            UPLOADS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+            return e.into_response();
         }
-        return perm_err.into_response();
-    }
+    };
+    // Look up the repo early so format dispatchers (Docker V2 token challenge,
+    // npm login, etc.) can run before the outer permission check.
     let repo_name_owned = repo_name.clone();
     let repo_config = match service::get_repo(state.repo.kv.as_ref(), &repo_name_owned).await {
         Ok(Some(r)) => r,
         Ok(None) => {
+            UPLOADS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
             return DepotError::NotFound(format!("repository '{}' not found", repo_name))
-                .into_response()
+                .into_response();
         }
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            UPLOADS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+            return e.into_response();
+        }
     };
 
-    // Dispatch Docker V2 paths before the permission check — the Docker
+    // Dispatch Docker V2 paths before the generic permission check — the Docker
     // dispatch handles auth internally with proper 401 Bearer challenges.
     if repo_config.format() == ArtifactFormat::Docker && (path == "v2" || path.starts_with("v2/")) {
+        UPLOADS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
         return depot_format_docker::api::dispatch::try_handle_docker_v2_path(
             &state.format_state(),
             &user.0,
@@ -882,6 +1060,34 @@ pub async fn put_artifact(
         .unwrap_or_else(|| {
             DepotError::NotFound("unrecognized Docker V2 path".to_string()).into_response()
         });
+    }
+
+    // Dispatch format-specific writes (npm publish, npm login, cargo publish, cargo
+    // unyank, etc.) before the outer permission check. Each format's dispatcher
+    // handles its own auth — most call `upload_preamble` which requires Write; npm
+    // login authenticates from the request body so must bypass the generic check.
+    if is_format_write_path(repo_config.format(), &axum::http::Method::PUT, &path) {
+        UPLOADS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+        return dispatch_format_write(
+            &state,
+            &user,
+            &repo_config,
+            &axum::http::Method::PUT,
+            &path,
+            headers,
+            body,
+        )
+        .await;
+    }
+
+    if let Err(perm_err) = state
+        .auth
+        .backend
+        .check_permission(&user.0, &repo_name, Capability::Write)
+        .await
+    {
+        UPLOADS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+        return perm_err.into_response();
     }
 
     // For proxy (group) repos, route writes to the first hosted member.
@@ -913,55 +1119,41 @@ pub async fn put_artifact(
         Err(e) => return e.into_response(),
     };
 
-    // Format-specific repos reject generic PUT uploads — packages must go
-    // through their dedicated endpoints so that metadata is properly tracked.
-    // Only Raw repos accept PUT via /repository/{repo}/{path}.
+    // Format-specific repos reject generic PUT uploads for paths that aren't
+    // already handled by the format write dispatcher above. Raw repos accept
+    // any PUT; Yum .rpm and Helm .tgz paths fall through to format-specific
+    // commit logic below; everything else returns 405.
     {
         use depot_core::store::kv::ArtifactFormat;
-        let reject_msg = match repo_config.format() {
-            ArtifactFormat::Yum => {
-                if path.ends_with(".rpm") {
-                    None // .rpm packages are handled below via commit_package
-                } else {
-                    Some(
-                        "Yum repositories only accept PUT for .rpm packages. \
-                         Use POST /yum/{repo}/upload or POST /service/rest/v1/components?repository={repo}",
-                    )
-                }
-            }
-            ArtifactFormat::Apt => Some(
-                "APT repositories do not accept PUT uploads. \
-                 Use POST /apt/{repo}/upload or POST /service/rest/v1/components?repository={repo}",
+        let reject_msg: Option<&'static str> = match repo_config.format() {
+            ArtifactFormat::Yum => (!path.ends_with(".rpm")).then_some(
+                "Yum repositories only accept PUT for .rpm package paths; \
+                 use `dnf`/`createrepo` or POST /repository/{repo}/upload for manual uploads.",
             ),
-            ArtifactFormat::Helm => {
-                if path.ends_with(".tgz") {
-                    None // .tgz chart packages are handled below via commit_chart
-                } else {
-                    Some(
-                        "Helm repositories only accept PUT for .tgz chart packages. \
-                         Use POST /helm/{repo}/upload or POST /service/rest/v1/components?repository={repo}",
-                    )
-                }
-            }
+            ArtifactFormat::Helm => (!path.ends_with(".tgz")).then_some(
+                "Helm repositories only accept PUT for .tgz chart paths; \
+                 use `helm push` or POST /repository/{repo}/upload for manual uploads.",
+            ),
+            ArtifactFormat::Apt => Some(
+                "APT repositories do not accept PUT uploads; \
+                 use POST /repository/{repo}/upload (or the Nexus-compatible /service/rest/v1/components).",
+            ),
             ArtifactFormat::PyPI => Some(
-                "PyPI repositories do not accept PUT uploads. \
-                 Use POST /pypi/{repo}/ (twine upload) or POST /service/rest/v1/components?repository={repo}",
+                "PyPI repositories do not accept PUT uploads; \
+                 use `twine upload` which POSTs to /repository/{repo}/.",
             ),
             ArtifactFormat::Npm => Some(
-                "NPM repositories do not accept PUT uploads. \
-                 Use npm publish to PUT /npm/{repo}/{package}",
+                "npm repositories only accept PUT via `npm publish` (PUT /repository/{repo}/{package}).",
             ),
             ArtifactFormat::Cargo => Some(
-                "Cargo repositories do not accept PUT uploads. \
-                 Use cargo publish",
+                "Cargo repositories only accept PUT via `cargo publish` (PUT /repository/{repo}/api/v1/crates/new).",
             ),
             ArtifactFormat::Golang => Some(
-                "Go module repositories do not accept PUT uploads. \
-                 Use POST /golang/{repo}/upload",
+                "Go module repositories do not accept PUT uploads; \
+                 use POST /repository/{repo}/upload.",
             ),
             ArtifactFormat::Docker => Some(
-                "Docker repositories do not accept PUT uploads. \
-                 Use docker push (Docker V2 API)",
+                "Docker repositories only accept writes through the OCI Distribution API (docker push).",
             ),
             // Raw repos accept PUTs — that's their interface.
             _ => None,
@@ -1209,9 +1401,10 @@ pub async fn delete_artifact(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
     uri: axum::http::Uri,
-    Path((repo_name, path)): Path<(String, String)>,
+    Path(rest): Path<String>,
     request_headers: HeaderMap,
 ) -> impl IntoResponse {
+    let (repo_name, path) = split_rest(&rest);
     let path = match normalize_artifact_path(&path) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -1259,6 +1452,20 @@ pub async fn delete_artifact(
         }
         Err(e) => return e.into_response(),
     };
+
+    // Dispatch format-specific DELETEs (e.g. cargo yank) before generic artifact delete.
+    if is_format_write_path(repo_config.format(), &axum::http::Method::DELETE, &path) {
+        return dispatch_format_write(
+            &state,
+            &user,
+            &repo_config,
+            &axum::http::Method::DELETE,
+            &path,
+            request_headers,
+            Body::empty(),
+        )
+        .await;
+    }
 
     let member_configs = match repo_config.kind {
         RepoKind::Hosted | RepoKind::Cache { .. } => vec![repo_config],

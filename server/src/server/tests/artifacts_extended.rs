@@ -1820,7 +1820,7 @@ async fn test_put_helm_chart_tgz() {
     assert_eq!(status, StatusCode::CREATED);
 
     // Verify index.yaml contains the chart.
-    let req = app.auth_request(Method::GET, "/helm/helm-put/index.yaml", &token);
+    let req = app.auth_request(Method::GET, "/repository/helm-put/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let index = String::from_utf8(body).unwrap();
@@ -1874,7 +1874,11 @@ async fn test_put_helm_chart_via_proxy_with_write_member() {
     assert_eq!(status, StatusCode::CREATED);
 
     // Verify it landed on the hosted member's index.
-    let req = app.auth_request(Method::GET, "/helm/helm-proxy-member/index.yaml", &token);
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/helm-proxy-member/index.yaml",
+        &token,
+    );
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let index = String::from_utf8(body).unwrap();

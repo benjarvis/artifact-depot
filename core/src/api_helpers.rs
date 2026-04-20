@@ -12,7 +12,10 @@ use std::sync::Arc;
 
 use sha2::Digest;
 
-use axum::http::{header, HeaderMap};
+use axum::body::Body;
+use axum::extract::{FromRequest, Multipart, Request};
+use axum::http::{header, HeaderMap, Method};
+use axum::response::{IntoResponse, Response};
 
 use crate::error::{DepotError, Retryability};
 use crate::format_state::FormatState;
@@ -20,6 +23,40 @@ use crate::repo;
 use crate::service;
 use crate::store::blob::BlobStore;
 use crate::store::kv::{ArtifactFormat, Capability, RepoConfig};
+
+/// Build an `axum::extract::Multipart` from a raw method/headers/body triple.
+///
+/// Format write dispatchers are called from the unified `/repository/{repo}/...`
+/// route, which hands them the raw body and headers instead of an
+/// axum-extracted `Multipart`. This helper reconstructs a `Request` and runs
+/// `Multipart::from_request` so each format can reuse its existing multipart
+/// parsing logic.
+pub async fn multipart_from_body(
+    method: &Method,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<Multipart, Response> {
+    let mut req = Request::new(body);
+    *req.method_mut() = method.clone();
+    if let Ok(uri) = "/".parse::<axum::http::Uri>() {
+        *req.uri_mut() = uri;
+    }
+    for (name, value) in headers.iter() {
+        req.headers_mut().insert(name, value.clone());
+    }
+    Multipart::from_request(req, &())
+        .await
+        .map_err(|e| e.into_response())
+}
+
+/// Buffer a request body into bytes, returning a 400 response if the body is
+/// malformed or exceeds the artifact-size cap. Used by JSON / small-body
+/// format write dispatchers (npm publish, cargo publish, etc.).
+pub async fn body_to_bytes(body: Body, limit: usize) -> Result<axum::body::Bytes, Response> {
+    axum::body::to_bytes(body, limit)
+        .await
+        .map_err(|e| DepotError::BadRequest(format!("failed to read body: {e}")).into_response())
+}
 
 /// Generate a `fn $name(config, state, blobs) -> $store_type` factory for format stores
 /// that share the standard `{ repo, kv, blobs, store, updater }` layout.

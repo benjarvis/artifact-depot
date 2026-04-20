@@ -95,14 +95,14 @@ TOML
     # Pre-check: verify InRelease and public key are accessible
     echo "=== Pre-checks ==="
     echo -n "InRelease: "
-    curl -sf -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/apt/apt-packages/dists/stable/InRelease"
+    curl -sf -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/repository/apt-packages/dists/stable/InRelease"
     echo ""
     echo -n "public.key: "
-    curl -sf -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/apt/apt-packages/public.key"
+    curl -sf -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/repository/apt-packages/public.key"
     echo ""
 
     # Fetch GPG key
-    curl -sf "http://localhost:${PORT}/apt/apt-packages/public.key" > "$TMP_DIR/depot.asc"
+    curl -sf "http://localhost:${PORT}/repository/apt-packages/public.key" > "$TMP_DIR/depot.asc"
     echo "GPG key fetched ($(wc -c < "$TMP_DIR/depot.asc") bytes)."
 
     # Run Docker container with apt-get test
@@ -119,7 +119,7 @@ TOML
         gpg --dearmor < /tmp/depot.asc > /etc/apt/trusted.gpg.d/depot.gpg
 
         # Add depot APT source
-        echo 'deb [signed-by=/etc/apt/trusted.gpg.d/depot.gpg] http://localhost:${PORT}/apt/apt-packages stable main' \
+        echo 'deb [signed-by=/etc/apt/trusted.gpg.d/depot.gpg] http://localhost:${PORT}/repository/apt-packages stable main' \
           > /etc/apt/sources.list.d/depot.list
 
         # Update package lists (exercises InRelease + Packages.gz)

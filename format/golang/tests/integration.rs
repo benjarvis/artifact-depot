@@ -61,14 +61,16 @@ async fn test_golang_format_validation() {
     let app = TestApp::new().await;
     app.create_hosted_repo("raw-repo").await;
 
-    // Accessing golang endpoint on a raw repo should fail.
+    // Under the unified `/repository/{repo}/...` router, a golang-shaped URL on
+    // a raw repo falls through to the generic artifact lookup and returns 404
+    // rather than 400 — URL shape is no longer tied to format.
     let req = app.auth_request(
         Method::GET,
-        "/golang/raw-repo/example.com/foo/@v/list",
+        "/repository/raw-repo/example.com/foo/@v/list",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -76,7 +78,7 @@ async fn test_golang_nonexistent_repo_404() {
     let app = TestApp::new().await;
     let req = app.auth_request(
         Method::GET,
-        "/golang/no-such-repo/example.com/foo/@v/list",
+        "/repository/no-such-repo/example.com/foo/@v/list",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -129,7 +131,7 @@ fn make_golang_upload_request(
 
     axum::http::Request::builder()
         .method(Method::POST)
-        .uri(format!("/golang/{}/upload", repo))
+        .uri(format!("/repository/{}/upload", repo))
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -158,7 +160,7 @@ async fn test_golang_upload_and_download() {
     // Download .info
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-hosted/example.com/hello/@v/v1.0.0.info",
+        "/repository/go-hosted/example.com/hello/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -168,7 +170,7 @@ async fn test_golang_upload_and_download() {
     // Download .mod
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-hosted/example.com/hello/@v/v1.0.0.mod",
+        "/repository/go-hosted/example.com/hello/@v/v1.0.0.mod",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -178,7 +180,7 @@ async fn test_golang_upload_and_download() {
     // Download .zip
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-hosted/example.com/hello/@v/v1.0.0.zip",
+        "/repository/go-hosted/example.com/hello/@v/v1.0.0.zip",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -221,7 +223,7 @@ async fn test_golang_list_versions() {
     // List versions
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-list/example.com/hello/@v/list",
+        "/repository/go-list/example.com/hello/@v/list",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -268,7 +270,7 @@ async fn test_golang_latest() {
     // @latest should return v1.1.0 info
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-latest/example.com/hello/@latest",
+        "/repository/go-latest/example.com/hello/@latest",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -299,7 +301,7 @@ async fn test_golang_case_encoding() {
     // Download using encoded path (lowercase with ! prefix)
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-case/github.com/!azure/sdk/@v/v1.0.0.info",
+        "/repository/go-case/github.com/!azure/sdk/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -329,7 +331,7 @@ async fn test_golang_upload_missing_module_400() {
 
     let req = axum::http::Request::builder()
         .method(Method::POST)
-        .uri("/golang/go-err/upload")
+        .uri("/repository/go-err/upload")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -359,7 +361,7 @@ async fn test_golang_upload_missing_version_400() {
 
     let req = axum::http::Request::builder()
         .method(Method::POST)
-        .uri("/golang/go-err-ver/upload")
+        .uri("/repository/go-err-ver/upload")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,
@@ -425,7 +427,7 @@ async fn test_golang_invalid_path_returns_404() {
     // No @v/ or @latest in path.
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-badpath/example.com/foo/bar",
+        "/repository/go-badpath/example.com/foo/bar",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -439,7 +441,7 @@ async fn test_golang_hosted_latest_no_versions_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-empty-latest/example.com/foo/@latest",
+        "/repository/go-empty-latest/example.com/foo/@latest",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -453,7 +455,7 @@ async fn test_golang_not_found_returns_404() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-empty/example.com/nonexistent/@v/v1.0.0.info",
+        "/repository/go-empty/example.com/nonexistent/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -486,7 +488,7 @@ async fn test_golang_cache_repo() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-upstream/example.com/cached/@v/v1.0.0.info",
+        "/repository/go-upstream/example.com/cached/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -523,7 +525,7 @@ async fn test_golang_proxy_repo() {
     // Access via proxy.
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-proxy/example.com/proxied/@v/v1.0.0.info",
+        "/repository/go-proxy/example.com/proxied/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -533,7 +535,7 @@ async fn test_golang_proxy_repo() {
     // List via proxy.
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-proxy/example.com/proxied/@v/list",
+        "/repository/go-proxy/example.com/proxied/@v/list",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -564,7 +566,7 @@ async fn test_golang_upload_proxy_routes_to_hosted() {
     // Verify it landed on the member.
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-proxy-member/example.com/through/@v/v1.0.0.info",
+        "/repository/go-proxy-member/example.com/through/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, _) = app.call_raw(req).await;
@@ -592,7 +594,7 @@ async fn test_golang_cache_info_fetches_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-info/example.com/foo/@v/v1.0.0.info",
+        "/repository/go-cache-info/example.com/foo/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -617,7 +619,7 @@ async fn test_golang_cache_mod_fetches_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-mod/example.com/foo/@v/v1.0.0.mod",
+        "/repository/go-cache-mod/example.com/foo/@v/v1.0.0.mod",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -642,7 +644,7 @@ async fn test_golang_cache_zip_fetches_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-zip/example.com/foo/@v/v1.0.0.zip",
+        "/repository/go-cache-zip/example.com/foo/@v/v1.0.0.zip",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -686,7 +688,7 @@ async fn test_golang_cache_serves_from_local_cache() {
     // Request should be served from local cache, not upstream.
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-local/example.com/cached/@v/v1.0.0.info",
+        "/repository/go-cache-local/example.com/cached/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -713,7 +715,7 @@ async fn test_golang_cache_upstream_404_returns_not_found() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-404/example.com/missing/@v/v1.0.0.info",
+        "/repository/go-cache-404/example.com/missing/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -738,7 +740,7 @@ async fn test_golang_cache_upstream_error() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-500/example.com/broken/@v/v1.0.0.info",
+        "/repository/go-cache-500/example.com/broken/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;
@@ -766,7 +768,7 @@ async fn test_golang_cache_list_from_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-list/example.com/foo/@v/list",
+        "/repository/go-cache-list/example.com/foo/@v/list",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -804,7 +806,7 @@ async fn test_golang_cache_list_fallback_to_local() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-listfb/example.com/local/@v/list",
+        "/repository/go-cache-listfb/example.com/local/@v/list",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -830,7 +832,7 @@ async fn test_golang_cache_latest_from_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-lat/example.com/foo/@latest",
+        "/repository/go-cache-lat/example.com/foo/@latest",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -861,7 +863,7 @@ async fn test_golang_cache_latest_fallback_to_local() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-cache-latfb/example.com/local/@latest",
+        "/repository/go-cache-latfb/example.com/local/@latest",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -894,7 +896,7 @@ async fn test_golang_proxy_with_cache_member() {
 
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-proxy-cm/example.com/proxycache/@v/v1.0.0.info",
+        "/repository/go-proxy-cm/example.com/proxycache/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, body) = app.call_raw(req).await;
@@ -927,7 +929,7 @@ async fn test_golang_delete_module_version() {
     // Verify it exists.
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-del/example.com/del/@v/v1.0.0.info",
+        "/repository/go-del/example.com/del/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, _) = app.call_raw(req).await;
@@ -951,7 +953,7 @@ async fn test_golang_delete_module_version() {
     // Verify it's gone.
     let req = app.auth_request(
         Method::GET,
-        "/golang/go-del/example.com/del/@v/v1.0.0.info",
+        "/repository/go-del/example.com/del/@v/v1.0.0.info",
         &app.admin_token(),
     );
     let (status, _) = app.call(req).await;

@@ -60,7 +60,7 @@ pub fn apt_upload_request_dist(
 
     Request::builder()
         .method(Method::POST)
-        .uri(format!("/apt/{}/upload", repo))
+        .uri(format!("/repository/{}/upload", repo))
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,

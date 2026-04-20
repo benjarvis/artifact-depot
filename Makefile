@@ -6,7 +6,8 @@
 	notices-cargo notices-npm \
 	lint-cargo-licenses lint-npm-licenses lint-reuse lint-fmt lint-clippy \
 	security-cargo-advisories security-npm-audit \
-	test-debug test-ui test-dynamodb test-docker-auth
+	test-debug test-ui test-dynamodb test-docker-auth \
+	docs docs-serve screenshots observability-screenshots
 
 all: test
 
@@ -124,7 +125,33 @@ coverage:
 docker:
 	docker buildx build -t depot .
 
+# Documentation site (Jekyll + just-the-docs).
+# Not wired into `all` / `test` -- doc builds shouldn't gate code CI.
+docs:
+	@echo "Building docs site..."
+	@cd docs && bundle install --quiet && bundle exec jekyll build
+
+docs-serve:
+	@cd docs && bundle install --quiet && bundle exec jekyll serve --livereload --host 0.0.0.0 --baseurl ""
+
+# Generate the curated UI screenshots embedded in docs/screenshots.md.
+# Boots a depot, seeds with `depot-bench demo`, kicks off `depot-bench
+# trickle` for live activity, then drives Chromium via the `screenshots`
+# Playwright project. Outputs land in docs/screenshots/ ready to commit.
+screenshots:
+	@bash scripts/screenshots.sh
+
+# Generate the Grafana-driven observability screenshots embedded in
+# docs/observability.md.  Brings up docker/standalone with the
+# `monitoring` profile (depot + otel-collector + Tempo + Loki +
+# Prometheus + Grafana + MinIO), seeds + trickles depot, waits for
+# dashboards to populate, then captures via the `observability`
+# Playwright project.  Outputs land in docs/screenshots/observability/.
+observability-screenshots:
+	@bash scripts/observability-screenshots.sh
+
 # Utility
 clean:
 	cargo clean
 	rm -rf build/demo
+	rm -rf docs/_site docs/.jekyll-cache

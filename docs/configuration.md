@@ -1,188 +1,21 @@
-# Configuration Reference
-
-Depot is configured via a TOML file, passed with `-c` (default: `depotd.toml`). All fields have sensible defaults -- an empty file (or no file at all) produces a working server on port 8080 with an embedded redb database and a local filesystem blob store.
-
-Operational settings (CORS, rate limiting, cleanup intervals, blob stores, etc.) are managed at runtime via the REST API, not in the TOML file. See [Runtime Settings](#runtime-settings) and [Blob Store Management](#blob-store-management) below.
-
-## Minimal Configuration
-
-```toml
-listen = "0.0.0.0:8080"
-default_admin_password = "admin"
-
-[kv_store]
-type = "redb"
-path = "depot.redb"
-```
-
-## Full Annotated Example
-
-```toml
-# -- Network -------------------------------------------------------
-listen = "0.0.0.0:443"           # Primary listener (default: "0.0.0.0:8080")
-http_listen = "0.0.0.0:80"      # Optional plain-HTTP listener (useful when TLS is enabled)
-
-# TLS -- both must be set together, or omitted for plain HTTP.
-tls_cert = "/etc/depot/cert.pem"
-tls_key = "/etc/depot/key.pem"
-
-# -- Bootstrap ------------------------------------------------------
-default_admin_password = "changeme"  # Admin password on first start (default: random, printed to stderr)
-
-# -- KV Store -------------------------------------------------------
-# Option A: redb (default, embedded, single-writer)
-[kv_store]
-type = "redb"
-path = "/var/lib/depot/depot.redb"
-
-# Option B: DynamoDB (requires the "dynamodb" feature at compile time)
-# [kv_store]
-# type = "dynamodb"
-# table_prefix = "depot"                  # Each table becomes "{prefix}_{name}" e.g. "depot_artifacts"
-# region = "us-east-1"
-# endpoint_url = "http://localhost:8000"  # Optional, for DynamoDB Local or ScyllaDB Alternator
-# max_retries = 3                         # Max retry attempts, 0-20 (default: 3)
-# connect_timeout_secs = 3               # TCP connection timeout (default: 3)
-# read_timeout_secs = 10                 # Per-request read timeout (default: 10)
-# retry_mode = "standard"                # "standard" or "adaptive" (default: "standard")
-
-# -- Logging --------------------------------------------------------
-# Application logs and per-request events are written to stdout and, when
-# configured, exported over OTLP. Run an OpenTelemetry collector in front
-# of Depot if you need file, Splunk, or S3 destinations -- the collector
-# handles batching, retries, and credentials better than any in-tree sink.
-[logging]
-otlp_endpoint = "http://otelcol:4318"    # OTLP logs endpoint (optional)
-
-# -- Metrics --------------------------------------------------------
-metrics_listen = "127.0.0.1:9090"        # Optional dedicated Prometheus metrics listener
-
-# -- LDAP (requires the "ldap" feature at compile time) -------------
-# [ldap]
-# url = "ldap://ldap.example.com:389"
-# bind_dn = "cn=service,dc=example,dc=com"
-# bind_password = "password"
-# user_base_dn = "ou=users,dc=example,dc=com"
-# user_filter = "(uid={username})"           # Default
-# group_base_dn = "ou=groups,dc=example,dc=com"
-# group_filter = "(member={dn})"             # Default
-# group_name_attr = "cn"                     # Default
-# starttls = false                           # Default
-# tls_skip_verify = false                    # Default
-# fallback_to_builtin = true                 # Default: try builtin auth if LDAP user not found
-#
-# [ldap.group_role_mapping]
-# ldap-admins = "admin"
-# ldap-readers = "read-only"
-```
-
-## Field Reference
-
-### Top-Level Fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `listen` | string | `"0.0.0.0:8080"` | Primary listener socket address |
-| `http_listen` | string | _(none)_ | Optional additional plain-HTTP listener; useful alongside TLS |
-| `tls_cert` | path | _(none)_ | PEM certificate file; must be paired with `tls_key` |
-| `tls_key` | path | _(none)_ | PEM private key file; must be paired with `tls_cert` |
-| `default_admin_password` | string | _(random)_ | Set admin password on first start instead of generating one |
-| `metrics_listen` | string | _(none)_ | Dedicated Prometheus metrics listener address |
-
-### `[kv_store]` -- redb
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | -- | Must be `"redb"` |
-| `path` | path | `"depot.redb"` | Path to the redb database file |
-
-### `[kv_store]` -- DynamoDB
-
-Requires the `dynamodb` feature flag at compile time.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | -- | Must be `"dynamodb"` |
-| `table_prefix` | string | **required** | Prefix for DynamoDB table names. Each logical table becomes `"{prefix}_{name}"` |
-| `region` | string | `"us-east-1"` | AWS region |
-| `endpoint_url` | string | _(none)_ | Override for DynamoDB Local, ScyllaDB Alternator, etc. |
-
-### `[logging]`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `otlp_endpoint` | string | _(none)_ | OTLP logs endpoint (e.g. `http://otelcol:4318` or `http://loki:3100/otlp`) |
-
-Depot always writes application logs to stdout. The per-request event target (`depot.request`) is filtered out of stdout and, when `otlp_endpoint` is set, exported to an OpenTelemetry collector alongside the application logs. Route the OTLP stream through a collector for file, Splunk, S3, or any other destination.
-
-Legacy `capacity`, `file_path`, `splunk_hec`, and `s3` keys under `[logging]` (or the old `[audit]` section) are silently ignored on startup with a warning; migrate those destinations to your OTel collector config.
-
-### `[ldap]`
-
-Requires the `ldap` feature flag at compile time. LDAP can also be configured at runtime via `PUT /api/v1/settings/ldap`.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `url` | string | **required** | LDAP server URL (e.g. `ldap://ldap.example.com:389`) |
-| `bind_dn` | string | **required** | Service account DN for user lookups |
-| `bind_password` | string | **required** | Service account password |
-| `user_base_dn` | string | **required** | Base DN for user searches |
-| `user_filter` | string | `"(uid={username})"` | LDAP filter; `{username}` is replaced with login name |
-| `group_base_dn` | string | **required** | Base DN for group searches |
-| `group_filter` | string | `"(member={dn})"` | Group filter; `{dn}` is replaced with user DN |
-| `group_name_attr` | string | `"cn"` | Attribute that holds the group name |
-| `group_role_mapping` | map | `{}` | Map LDAP group names to Depot role names |
-| `starttls` | bool | `false` | Use STARTTLS |
-| `tls_skip_verify` | bool | `false` | Skip TLS certificate verification |
-| `fallback_to_builtin` | bool | `true` | Fall back to builtin auth when LDAP user not found |
-
+---
+title: Configuration
+nav_order: 3
+has_children: true
 ---
 
-## Runtime Settings
+# Configuration
 
-These settings are **not** in the TOML config file. They are stored in the KV store and managed via the REST API:
+Depot's configuration is split into two layers:
 
-- `GET /api/v1/settings` -- read current settings
-- `PUT /api/v1/settings` -- update settings (admin only)
+- **[TOML config file](toml-reference.md)** — static settings read at
+  startup: network listeners, KV backend, logging/tracing endpoints,
+  TLS, LDAP, and the optional `[initialization]` section for
+  self-contained first-boot provisioning.
 
-Changes propagate to all cluster instances within 30 seconds.
-
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `access_log` | bool | `true` | Log all HTTP requests (method, path, status, duration) |
-| `max_artifact_bytes` | integer | `34359738368` (32 GiB) | Maximum upload body size |
-| `default_docker_repo` | string or null | `null` | Route `/v2/` requests to this repo name |
-| `cors` | object or null | `null` | CORS configuration (allowed_origins, allowed_methods, allowed_headers, max_age_secs) |
-| `rate_limit` | object or null | `null` | Rate limiting (requests_per_second, burst_size) per client IP |
-| `gc_interval_secs` | integer or null | `86400` (24h) | Blob garbage collection interval |
-| `max_docker_chunk_count` | integer | `10000` | Maximum chunks per Docker chunked upload session |
-
-## Blob Store Management
-
-Blob stores are **not** configured in the TOML file. They are managed at runtime via the REST API:
-
-- `POST /api/v1/stores` -- create a new blob store
-- `GET /api/v1/stores` -- list all stores
-- `DELETE /api/v1/stores/{name}` -- delete a store
-
-A "default" filesystem blob store is auto-created on first boot. Each repository selects its store via the `store` field at creation time.
-
-### File store
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | -- | Must be `"file"` |
-| `root` | path | -- | Root directory for blob storage |
-| `sync` | bool | `true` | Fsync files and parent directories after writes |
-
-### S3 store
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | -- | Must be `"s3"` |
-| `bucket` | string | **required** | S3 bucket name |
-| `endpoint` | string | _(none)_ | Custom endpoint for S3-compatible stores (MinIO, etc.) |
-| `region` | string | `"us-east-1"` | AWS region |
-| `prefix` | string | _(none)_ | Key prefix within the bucket |
-| `access_key` | string | _(none)_ | AWS access key; falls back to default credential chain |
-| `secret_key` | string | _(none)_ | AWS secret key |
+- **[Runtime settings](runtime-settings.md)** — operational knobs
+  stored in the KV store and managed via the REST API (or the Settings
+  page in the web UI). Changes propagate to every cluster instance
+  within 30 seconds. Covers upload limits, GC intervals, Docker
+  defaults, CORS, rate limiting, JWT lifetimes, and blob store
+  management.

@@ -9,17 +9,14 @@
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    Extension,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio_util::io::ReaderStream;
 
 use depot_core::auth::AuthenticatedUser;
-use depot_core::error::DepotError;
 use depot_core::format_state::FormatState;
 use depot_core::repo;
 use depot_core::service;
@@ -55,20 +52,6 @@ fn cargo_ok() -> Response {
         .into_response()
 }
 
-/// Validate that a repo exists and has Cargo format, mapping errors to Cargo protocol format.
-async fn validate_cargo_repo(state: &FormatState, repo_name: &str) -> Result<RepoConfig, Response> {
-    depot_core::api_helpers::validate_format_repo(state, repo_name, ArtifactFormat::Cargo)
-        .await
-        .map_err(|e| match e {
-            DepotError::NotFound(_) => cargo_error(StatusCode::NOT_FOUND, "repository not found"),
-            DepotError::BadRequest(_) => cargo_error(
-                StatusCode::BAD_REQUEST,
-                "repository is not a cargo repository",
-            ),
-            _ => cargo_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-        })
-}
-
 // =============================================================================
 // /repository/{repo}/ dispatch for Cargo repos
 // =============================================================================
@@ -77,12 +60,13 @@ pub async fn try_handle_repository_path(
     state: &FormatState,
     config: &RepoConfig,
     path: &str,
+    query: Option<&str>,
 ) -> Option<Response> {
     // index/config.json → config
     if path == "index/config.json" {
         let body = serde_json::json!({
-            "dl": format!("/cargo/{}/api/v1/crates/{{crate}}/{{version}}/download", config.name),
-            "api": format!("/cargo/{}", config.name),
+            "dl": format!("/repository/{}/api/v1/crates/{{crate}}/{{version}}/download", config.name),
+            "api": format!("/repository/{}", config.name),
         });
         return Some(
             (
@@ -109,7 +93,23 @@ pub async fn try_handle_repository_path(
         }
     }
 
-    // api/v1/crates → search (no query params available here, returns all)
+    // api/v1/crates/{name}/{version}/download → crate tarball
+    if let Some(rest) = path.strip_prefix("api/v1/crates/") {
+        if let Some(tail) = rest.strip_suffix("/download") {
+            if let Some((crate_name, version)) = tail.rsplit_once('/') {
+                if !crate_name.is_empty() && !version.is_empty() {
+                    return Some(match config.repo_type() {
+                        RepoType::Hosted | RepoType::Cache => {
+                            hosted_download(state, config, crate_name, version).await
+                        }
+                        RepoType::Proxy => proxy_download(state, config, crate_name, version).await,
+                    });
+                }
+            }
+        }
+    }
+
+    // api/v1/crates[?q={filter}] → search.
     if path == "api/v1/crates" {
         let blobs = match state.blob_store(&config.store).await {
             Ok(b) => b,
@@ -126,8 +126,19 @@ pub async fn try_handle_repository_path(
             Ok(c) => c,
             Err(e) => return Some(e.into_response()),
         };
+        // Optional `?q=...` substring filter.
+        let filter = query
+            .and_then(|q| {
+                q.split('&').find_map(|p| {
+                    p.strip_prefix("q=")
+                        .map(|v| urlencoding::decode(v).unwrap_or_default().into_owned())
+                })
+            })
+            .unwrap_or_default();
+        let filter_lc = filter.to_lowercase();
         let results: Vec<serde_json::Value> = crates
             .iter()
+            .filter(|name| filter.is_empty() || name.to_lowercase().contains(&filter_lc))
             .map(|name| {
                 serde_json::json!({
                     "name": name,
@@ -155,87 +166,67 @@ pub async fn try_handle_repository_path(
 }
 
 // =============================================================================
-// GET /cargo/{repo}/index/config.json
+// /repository/{repo}/ dispatch for Cargo repos (writes)
 // =============================================================================
 
-pub async fn config_json(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-) -> Response {
-    let _config = match validate_cargo_repo(&state, &repo_name).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
-    if let Err(e) = state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await
-    {
-        return e.into_response();
+/// Handle a write request under `/repository/{repo}/<path>` for a Cargo repo.
+/// Returns `None` if the (method, path) combination is not a Cargo write.
+pub async fn try_handle_repository_write(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &axum::http::Method,
+    path: &str,
+    _headers: &axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Option<axum::response::Response> {
+    // PUT api/v1/crates/new — publish
+    if method == axum::http::Method::PUT && path == "api/v1/crates/new" {
+        let body_bytes = match depot_core::api_helpers::body_to_bytes(body, usize::MAX).await {
+            Ok(b) => b,
+            Err(r) => return Some(r),
+        };
+        return Some(handle_publish(state, user, config, body_bytes).await);
     }
 
-    let body = serde_json::json!({
-        "dl": format!("/cargo/{repo_name}/api/v1/crates/{{crate}}/{{version}}/download"),
-        "api": format!("/cargo/{repo_name}"),
-    });
-
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&body).unwrap_or_default(),
-    )
-        .into_response()
-}
-
-// =============================================================================
-// GET /cargo/{repo}/index/... — sparse index entry
-// =============================================================================
-
-/// All sparse index route variants extract the crate name from the last URI segment.
-/// Axum route params differ per pattern, so we parse the raw URI instead.
-pub async fn get_index_entry(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    req: axum::extract::Request,
-) -> Response {
-    let uri_path = req.uri().path().to_string();
-    let segments: Vec<&str> = uri_path.split('/').filter(|s| !s.is_empty()).collect();
-
-    // Path pattern: /cargo/{repo}/index/.../{name}
-    // segments[0] = "cargo", segments[1] = repo, segments[2] = "index", last = name
-    if segments.len() < 4 {
-        return cargo_error(StatusCode::BAD_REQUEST, "invalid index path");
+    // DELETE api/v1/crates/{crate_name}/{version}/yank
+    if method == axum::http::Method::DELETE {
+        if let Some(rest) = path.strip_prefix("api/v1/crates/") {
+            if let Some(rest) = rest.strip_suffix("/yank") {
+                let segments: Vec<&str> = rest.split('/').collect();
+                if segments.len() == 2 {
+                    let crate_name = segments[0];
+                    let version = segments[1];
+                    if !crate_name.is_empty() && !version.is_empty() {
+                        return Some(
+                            handle_set_yanked(state, user, config, crate_name, version, true).await,
+                        );
+                    }
+                }
+            }
+        }
     }
 
-    let repo_name = match segments.get(1) {
-        Some(s) => *s,
-        None => return cargo_error(StatusCode::BAD_REQUEST, "invalid index path"),
-    };
-    let crate_name = match segments.last() {
-        Some(s) => *s,
-        None => return cargo_error(StatusCode::BAD_REQUEST, "invalid index path"),
-    };
-
-    let config = match validate_cargo_repo(&state, repo_name).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
-    if let Err(e) = state
-        .auth
-        .check_permission(&user.0, repo_name, Capability::Read)
-        .await
-    {
-        return e.into_response();
+    // PUT api/v1/crates/{crate_name}/{version}/unyank
+    if method == axum::http::Method::PUT {
+        if let Some(rest) = path.strip_prefix("api/v1/crates/") {
+            if let Some(rest) = rest.strip_suffix("/unyank") {
+                let segments: Vec<&str> = rest.split('/').collect();
+                if segments.len() == 2 {
+                    let crate_name = segments[0];
+                    let version = segments[1];
+                    if !crate_name.is_empty() && !version.is_empty() {
+                        return Some(
+                            handle_set_yanked(state, user, config, crate_name, version, false)
+                                .await,
+                        );
+                    }
+                }
+            }
+        }
     }
 
-    match config.repo_type() {
-        RepoType::Hosted => hosted_index_entry(&state, &config, crate_name).await,
-        RepoType::Proxy => proxy_index_entry(&state, &config, crate_name).await,
-        RepoType::Cache => hosted_index_entry(&state, &config, crate_name).await,
-    }
+    None
 }
 
 async fn hosted_index_entry(state: &FormatState, config: &RepoConfig, name: &str) -> Response {
@@ -342,27 +333,24 @@ fn default_kind() -> String {
     "normal".to_string()
 }
 
-pub async fn publish(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-    body: Body,
+/// Shared guts for cargo publish. Parses the [json_len][json][crate_len][crate]
+/// wire format, stores the crate blob, and records the version metadata.
+async fn handle_publish(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    body_bytes: axum::body::Bytes,
 ) -> Response {
-    let config = match validate_cargo_repo(&state, &repo_name).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
     if let Err(e) = state
         .auth
-        .check_permission(&user.0, &repo_name, Capability::Write)
+        .check_permission(&user.0, &config.name, Capability::Write)
         .await
     {
         return e.into_response();
     }
 
     let (target_repo, _target_config) =
-        match repo::resolve_format_write_target(state.kv.as_ref(), &config, ArtifactFormat::Cargo)
+        match repo::resolve_format_write_target(state.kv.as_ref(), config, ArtifactFormat::Cargo)
             .await
         {
             Ok(v) => v,
@@ -374,28 +362,26 @@ pub async fn publish(
         Err(e) => return e.into_response(),
     };
 
-    // Stream the body incrementally, buffering only the small header.
-    let mut reader = StreamReader::new(body);
-
-    // Parse header: [4-byte LE json_len][json][4-byte LE crate_len]
-    let len_bytes = match reader.read_exact(4).await {
-        Ok(b) => b,
-        Err(_) => return cargo_error(StatusCode::BAD_REQUEST, "request body too short"),
-    };
+    // Parse header: [4-byte LE json_len][json][4-byte LE crate_len][crate bytes]
+    let buf = body_bytes.as_ref();
+    if buf.len() < 4 {
+        return cargo_error(StatusCode::BAD_REQUEST, "request body too short");
+    }
     #[allow(clippy::indexing_slicing)]
-    let json_len =
-        u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
+    let json_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    let mut offset = 4usize;
 
-    let json_bytes = match reader.read_exact(json_len).await {
-        Ok(b) => b,
-        Err(_) => {
-            return cargo_error(
-                StatusCode::BAD_REQUEST,
-                "request body too short for metadata",
-            )
-        }
-    };
-    let meta: PublishMeta = match serde_json::from_slice(&json_bytes) {
+    if buf.len() < offset + json_len {
+        return cargo_error(
+            StatusCode::BAD_REQUEST,
+            "request body too short for metadata",
+        );
+    }
+    #[allow(clippy::indexing_slicing)]
+    let json_bytes = &buf[offset..offset + json_len];
+    offset += json_len;
+
+    let meta: PublishMeta = match serde_json::from_slice(json_bytes) {
         Ok(m) => m,
         Err(e) => {
             return cargo_error(
@@ -405,20 +391,35 @@ pub async fn publish(
         }
     };
 
-    let len_bytes = match reader.read_exact(4).await {
-        Ok(b) => b,
-        Err(_) => {
-            return cargo_error(
-                StatusCode::BAD_REQUEST,
-                "request body too short for crate length",
-            )
-        }
-    };
+    if buf.len() < offset + 4 {
+        return cargo_error(
+            StatusCode::BAD_REQUEST,
+            "request body too short for crate length",
+        );
+    }
     #[allow(clippy::indexing_slicing)]
-    let crate_len =
-        u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as u64;
+    let crate_len = u32::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ]) as u64;
+    offset += 4;
 
-    // Stream the crate bytes to BlobWriter, computing hashes incrementally.
+    if (buf.len() as u64) < (offset as u64) + crate_len {
+        return cargo_error(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "request body too short for crate data: expected {} bytes, got {}",
+                crate_len,
+                buf.len().saturating_sub(offset),
+            ),
+        );
+    }
+    #[allow(clippy::indexing_slicing)]
+    let crate_bytes = &buf[offset..offset + crate_len as usize];
+
+    // Write the crate bytes to BlobWriter, computing hashes.
     let blob_id = uuid::Uuid::new_v4().to_string();
     let mut blob_writer = match blobs.create_writer(&blob_id, Some(crate_len)).await {
         Ok(w) => w,
@@ -426,40 +427,14 @@ pub async fn publish(
     };
     let mut blake3_hasher = blake3::Hasher::new();
     let mut sha256_hasher = Sha256::new();
-    let mut size = 0u64;
 
-    while size < crate_len {
-        let chunk = match reader.next_chunk().await {
-            Some(Ok(c)) => c,
-            Some(Err(e)) => {
-                let _ = blob_writer.abort().await;
-                return cargo_error(StatusCode::BAD_REQUEST, &format!("error reading body: {e}"));
-            }
-            None => break,
-        };
-        if chunk.is_empty() {
-            continue;
-        }
-        blake3_hasher.update(&chunk);
-        Digest::update(&mut sha256_hasher, &chunk);
-        if let Err(e) = blob_writer.write_chunk(&chunk).await {
-            let _ = blob_writer.abort().await;
-            return cargo_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("blob write failed: {e}"),
-            );
-        }
-        size += chunk.len() as u64;
-    }
-
-    if size != crate_len {
+    blake3_hasher.update(crate_bytes);
+    Digest::update(&mut sha256_hasher, crate_bytes);
+    if let Err(e) = blob_writer.write_chunk(crate_bytes).await {
         let _ = blob_writer.abort().await;
         return cargo_error(
-            StatusCode::BAD_REQUEST,
-            &format!(
-                "request body too short for crate data: expected {} bytes, got {}",
-                crate_len, size
-            ),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("blob write failed: {e}"),
         );
     }
 
@@ -472,6 +447,7 @@ pub async fn publish(
 
     let blake3_hash = blake3_hasher.finalize().to_hex().to_string();
     let sha256 = hex_encode(Digest::finalize(sha256_hasher));
+    let size = crate_len;
 
     // Build CrateVersionMeta from publish metadata.
     let deps: Vec<CrateDep> = meta
@@ -531,77 +507,6 @@ pub async fn publish(
             tracing::error!(error = %e, "cargo publish failed");
             cargo_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
         }
-    }
-}
-
-/// Helper for reading exact byte counts from a streaming body.
-struct StreamReader {
-    stream:
-        std::pin::Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, axum::Error>> + Send>>,
-    buffer: bytes::BytesMut,
-}
-
-impl StreamReader {
-    fn new(body: Body) -> Self {
-        Self {
-            stream: Box::pin(body.into_data_stream()),
-            buffer: bytes::BytesMut::new(),
-        }
-    }
-
-    /// Read exactly `n` bytes, buffering from the stream as needed.
-    async fn read_exact(&mut self, n: usize) -> Result<bytes::Bytes, String> {
-        use futures::StreamExt;
-        while self.buffer.len() < n {
-            match self.stream.next().await {
-                Some(Ok(chunk)) => self.buffer.extend_from_slice(&chunk),
-                Some(Err(e)) => return Err(e.to_string()),
-                None => return Err("unexpected end of stream".to_string()),
-            }
-        }
-        Ok(self.buffer.split_to(n).freeze())
-    }
-
-    /// Return the next chunk (draining internal buffer first).
-    async fn next_chunk(&mut self) -> Option<Result<bytes::Bytes, String>> {
-        use futures::StreamExt;
-        if !self.buffer.is_empty() {
-            return Some(Ok(self.buffer.split().freeze()));
-        }
-        match self.stream.next().await {
-            Some(Ok(chunk)) => Some(Ok(chunk)),
-            Some(Err(e)) => Some(Err(e.to_string())),
-            None => None,
-        }
-    }
-}
-
-// =============================================================================
-// GET /cargo/{repo}/api/v1/crates/{name}/{version}/download
-// =============================================================================
-
-pub async fn download(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, crate_name, version)): Path<(String, String, String)>,
-) -> Response {
-    let config = match validate_cargo_repo(&state, &repo_name).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
-    if let Err(e) = state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await
-    {
-        return e.into_response();
-    }
-
-    match config.repo_type() {
-        RepoType::Hosted => hosted_download(&state, &config, &crate_name, &version).await,
-        RepoType::Cache => hosted_download(&state, &config, &crate_name, &version).await,
-        RepoType::Proxy => proxy_download(&state, &config, &crate_name, &version).await,
     }
 }
 
@@ -670,30 +575,25 @@ async fn proxy_download(
     cargo_error(StatusCode::NOT_FOUND, "crate not found in any member")
 }
 
-// =============================================================================
-// DELETE /cargo/{repo}/api/v1/crates/{name}/{version}/yank
-// =============================================================================
-
-pub async fn yank(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, crate_name, version)): Path<(String, String, String)>,
+/// Shared guts for yank/unyank. Flips the `yanked` flag on a crate version.
+async fn handle_set_yanked(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    crate_name: &str,
+    version: &str,
+    yanked: bool,
 ) -> Response {
-    let config = match validate_cargo_repo(&state, &repo_name).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
     if let Err(e) = state
         .auth
-        .check_permission(&user.0, &repo_name, Capability::Write)
+        .check_permission(&user.0, &config.name, Capability::Write)
         .await
     {
         return e.into_response();
     }
 
     let (target_repo, _target_config) =
-        match repo::resolve_format_write_target(state.kv.as_ref(), &config, ArtifactFormat::Cargo)
+        match repo::resolve_format_write_target(state.kv.as_ref(), config, ArtifactFormat::Cargo)
             .await
         {
             Ok(v) => v,
@@ -712,138 +612,11 @@ pub async fn yank(
         updater: &state.updater,
     };
 
-    match store.set_yanked(&crate_name, &version, true).await {
+    match store.set_yanked(crate_name, version, yanked).await {
         Ok(true) => cargo_ok(),
         Ok(false) => cargo_error(StatusCode::NOT_FOUND, "crate version not found"),
         Err(e) => cargo_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
-}
-
-// =============================================================================
-// PUT /cargo/{repo}/api/v1/crates/{name}/{version}/unyank
-// =============================================================================
-
-pub async fn unyank(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, crate_name, version)): Path<(String, String, String)>,
-) -> Response {
-    let config = match validate_cargo_repo(&state, &repo_name).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
-    if let Err(e) = state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Write)
-        .await
-    {
-        return e.into_response();
-    }
-
-    let (target_repo, _target_config) =
-        match repo::resolve_format_write_target(state.kv.as_ref(), &config, ArtifactFormat::Cargo)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return cargo_error(StatusCode::BAD_REQUEST, &e.to_string()),
-        };
-
-    let blobs = match state.blob_store(&config.store).await {
-        Ok(b) => b,
-        Err(e) => return e.into_response(),
-    };
-    let store = CargoStore {
-        repo: &target_repo,
-        kv: state.kv.as_ref(),
-        blobs: blobs.as_ref(),
-        store: &config.store,
-        updater: &state.updater,
-    };
-
-    match store.set_yanked(&crate_name, &version, false).await {
-        Ok(true) => cargo_ok(),
-        Ok(false) => cargo_error(StatusCode::NOT_FOUND, "crate version not found"),
-        Err(e) => cargo_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-    }
-}
-
-// =============================================================================
-// GET /cargo/{repo}/api/v1/crates?q=term — search
-// =============================================================================
-
-#[derive(Debug, Deserialize)]
-pub struct SearchQuery {
-    q: Option<String>,
-}
-
-pub async fn search(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-    Query(query): Query<SearchQuery>,
-) -> Response {
-    let config = match validate_cargo_repo(&state, &repo_name).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
-    if let Err(e) = state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await
-    {
-        return e.into_response();
-    }
-
-    let blobs = match state.blob_store(&config.store).await {
-        Ok(b) => b,
-        Err(e) => return e.into_response(),
-    };
-    let store = CargoStore {
-        repo: &config.name,
-        kv: state.kv.as_ref(),
-        blobs: blobs.as_ref(),
-        store: &config.store,
-        updater: &state.updater,
-    };
-
-    let crates = match store.list_crates().await {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
-    };
-
-    let term = query.q.unwrap_or_default().to_lowercase();
-    let filtered: Vec<&String> = if term.is_empty() {
-        crates.iter().collect()
-    } else {
-        crates.iter().filter(|c| c.contains(&term)).collect()
-    };
-
-    let results: Vec<serde_json::Value> = filtered
-        .iter()
-        .map(|name| {
-            serde_json::json!({
-                "name": name,
-                "max_version": "0.0.0",
-                "description": "",
-            })
-        })
-        .collect();
-
-    let body = serde_json::json!({
-        "crates": results,
-        "meta": {
-            "total": results.len(),
-        },
-    });
-
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&body).unwrap_or_default(),
-    )
-        .into_response()
 }
 
 fn hex_encode(data: impl AsRef<[u8]>) -> String {

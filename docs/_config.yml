@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 Artifact Depot Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+title: Artifact Depot
+description: Rust-native, scale-out artifact repository manager
+url: https://artifact-depot.github.io
+baseurl: /artifact-depot
+
+# Site logo (rendered as the masthead background by just-the-docs when
+# `site.logo` is set). Same SVG used by the embedded UI's toolbar so the
+# brand is consistent between the running server and these docs.
+logo: /assets/logo.svg
+
+# Theme.  `color_scheme: light` bakes the light palette into
+# `just-the-docs-default.css` at build time; the dark variant is wired
+# in via `_includes/head_custom.html` behind a `prefers-color-scheme: dark`
+# media query so the browser auto-switches with no JS, no FOUC, and no
+# localStorage involvement.
+theme: just-the-docs
+
+# UI.
+color_scheme: light
+search_enabled: true
+heading_anchors: true
+
+# "Edit this page on GitHub" links.
+gh_edit_link: true
+gh_edit_link_text: Edit this page on GitHub
+gh_edit_repository: https://github.com/artifact-depot/artifact-depot
+gh_edit_branch: main
+gh_edit_source: docs
+gh_edit_view_mode: tree
+
+# Top-right auxiliary nav.
+aux_links:
+  "GitHub":
+    - "https://github.com/artifact-depot/artifact-depot"
+
+# Sass / SCSS.  just-the-docs 0.12 still uses Sass `@import`, `darken()`,
+# `map-get()` etc. which Dart Sass 1.x deprecates in favour of `@use`,
+# `color.adjust()`, `map.get()`.  Until the next theme release ships a
+# Dart Sass 2 / 3-clean rewrite, silence the deprecation warnings that
+# bubble out of the gem's _sass/ files (we can't fix them at the source).
+sass:
+  quiet_deps: true
+  silence_deprecations:
+    - import
+    - global-builtin
+    - color-functions
+    - slash-div
+
+# Plugins.
+plugins:
+  - jekyll-relative-links
+
+# Rewrite `foo.md` links in source markdown to the rendered permalinks.
+relative_links:
+  enabled: true
+  collections: false
+
+# Apply the just-the-docs `default` layout to every markdown page so they
+# render with the sidebar nav, search, and theme chrome.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+# Don't ship build inputs into the published site.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+  - node_modules
+  - .bundle

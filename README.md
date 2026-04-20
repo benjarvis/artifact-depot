@@ -1,39 +1,58 @@
 # Artifact Depot
 
-A Rust-native, scale-out artifact repository manager. Artifact Depot is a modern replacement for Sonatype Nexus and JFrog Artifactory, focused on efficiency, performance, and operational simplicity. It ships as a single static binary with an embedded web UI and zero runtime dependencies.
+Artifact Depot is a safe-Rust, scale-out artifact repository manager. It is a modern replacement for Sonatype Nexus and JFrog Artifactory at datacenter scale, but it is equally well suited as an edge-deployed artifact cache in CI pipelines and dev containers, or as an in-cluster Docker cache alongside a Kubernetes control plane. It has no SQL dependency -- it requires only eventually consistent key-value semantics, so it is web-scale capable out of the box. Artifact Depot ships as a single statically-linked binary or a rootless `FROM scratch` Docker image, with the web UI embedded in the binary.
+
+Under the hood, all ingested content is hashed with BLAKE3 and stored content-addressable with automatic deduplication; unreferenced blobs are swept by an asynchronous, two-pass garbage collector. Because artifacts reference blobs by content hash, repositories can be cloned (or snapshotted) instantly without duplicating any data -- only the metadata is copied. The metadata backend is pluggable: embedded redb for a single node, or outboard DynamoDB (AWS DynamoDB, or any DynamoDB-compatible store such as [ScyllaDB Alternator](https://www.scylladb.com/alternator/)) for a cluster. Blob storage is equally pluggable: the local filesystem or any S3-compatible object store.
+
+With an outboard DynamoDB-compatible KV and an S3-compatible blob store, any number of Depot instances can run simultaneously against the same backend to scale out load with no coordination overhead on the hot path. Each instance runs happily in a tiny virtual machine.  A distributed lease mechanism ensures at-most-one execution for background work like blob garbage collection, and instance liveness is tracked via heartbeats so failed nodes are detected and their leases reclaimed.
 
 ## Features
 
 ### Artifact Formats
 
-Hosted, cache (pull-through with TTL), and group/proxy (virtual) repository types for all formats:
+Hosted, cache (pull-through with TTL), and proxy (group / virtual) repository types are supported for every format below. All formats share a single URL surface -- clients point at `http://depot.example.com/repository/{repo_name}/` and Depot routes the request based on the repository's configured format. Docker / OCI is the only exception: its clients insist on the protocol's own `/v2/` prefix.
 
-- **Raw** -- upload, download, search, and browse arbitrary files
-- **Docker / OCI** -- Docker Registry V2 and OCI Distribution Spec with full multi-arch manifest support
-- **APT** -- Debian/Ubuntu packages with GPG-signed Release files
-- **Yum** -- RPM packages with repodata generation
-- **PyPI** -- Python packages with PEP 503 simple index
-- **NPM** -- Node.js packages with full registry protocol
-- **Cargo** -- Rust crates with index generation
-- **Helm** -- Kubernetes Helm charts
-- **Go modules** -- Go module proxy protocol
+| Format | Protocol | Client Tool |
+|--------|----------|-------------|
+| Raw | REST PUT/GET/DELETE | curl, wget |
+| Docker / OCI | OCI Distribution Spec (V2), multi-arch | docker, podman |
+| APT | Debian repository with GPG signing | apt |
+| Yum | YUM/DNF repository with repomd | dnf, yum |
+| PyPI | PEP 503 simple index | pip, twine |
+| NPM | npm registry protocol | npm |
+| Cargo | Cargo sparse registry | cargo |
+| Helm | Helm chart repository | helm |
+| Go modules | Go module proxy (GOPROXY) | go |
 
 ### Storage
 
-- **Content-addressable blob dedup** -- BLAKE3 hashing with automatic deduplication across all repositories
-- **Pluggable KV backends** -- embedded redb for single-node or DynamoDB-compatible stores for distributed deployments (AWS DynamoDB or on-prem alternatives like [ScyllaDB Alternator](https://www.scylladb.com/alternator/))
-- **Pluggable blob backends** -- local filesystem or S3-compatible object storage
-- **Eventually consistent by default** -- regular reads tolerate stale values; strong consistency is used only for coordination (leases, version-checked updates). This avoids the operational cost and scaling bottleneck of a centralized SQL database. KV stores scale horizontally with zero schema migrations, no connection pooling, and no vacuum/compaction tuning.
+- **Content-addressable blob dedup** -- BLAKE3 hashing with automatic deduplication across every repository and format
+- **Dual-hash for Docker / OCI** -- BLAKE3 is the internal blob key; SHA-256 digests (required by the OCI spec) are stored as metadata
+- **Pluggable KV backends** -- embedded [redb](https://www.redb.org/) for single-node, or any DynamoDB-compatible store for distributed deployments
+- **Pluggable blob backends** -- local filesystem or S3-compatible object storage (AWS S3, MinIO, Garage, etc.)
+- **Eventually consistent by default** -- regular reads tolerate stale values; strong consistency is used only for coordination paths (distributed leases, version-checked updates). No SQL, no schema migrations, no connection pool tuning
+- **Repository clone / snapshot** -- point-in-time copies of any repository, free of blob duplication because the new artifacts share the same content-addressable blobs
 
 ### Scale-Out
 
-Multiple Depot instances can run against shared KV + S3 backends with no coordination overhead for normal reads and writes. A distributed lease mechanism ensures at-most-one execution for background work like blob garbage collection. Instance liveness is tracked via heartbeats, and a check-pause protocol coordinates consistency checks across the cluster.
+Multiple Depot instances run against shared KV + S3 with no coordination overhead for normal reads and writes. A distributed lease ensures at-most-one execution for background work like blob garbage collection. Instance liveness is tracked with a 30-second heartbeat and a 90-second timeout, and a check-pause protocol coordinates integrity checks across the cluster.
 
 ### Security and Administration
 
-- **Authentication & RBAC** -- JWT and Basic auth, Argon2 password hashing, role-based access control
-- **Vue web UI** -- repository, user, role, and store management, plus settings
+- **Authentication** -- JWT bearer tokens and HTTP Basic auth, Argon2id password hashing
+- **RBAC** -- role-based capabilities (`Read`, `Write`, `Delete`) scoped to repository name globs
+- **LDAP** -- optional LDAP authentication with group-to-role mapping (feature-gated)
+- **Embedded web UI** -- Vue SPA for repository, user, role, and store management, live settings, and log browsing
 - **OpenAPI** -- interactive Swagger UI at `/swagger-ui/`
+- **Backup / restore** -- export and import the full system configuration as a single JSON document
+
+### Observability
+
+Artifact Depot has first-class OpenTelemetry support -- logs, traces, and metrics all flow through the same OTLP pipeline, so you can point Depot at any OTel-compatible collector (Grafana Tempo / Loki, Jaeger, Honeycomb, Datadog, etc.) and get end-to-end visibility across a cluster.
+
+- **Tracing** -- OTLP gRPC export of request spans with adaptive rate-limited sampling (default: 100 root traces/sec, configurable). Child KV and blob spans are kept on sampled traces, giving a full waterfall from HTTP handler down to the storage backend. Enable with `[tracing] otlp_endpoint = "http://otel-collector:4317"`.
+- **Logs** -- application logs go to stdout; per-request structured events are exported via OTLP alongside traces, sharing trace / span IDs so logs and spans correlate automatically. For Splunk, S3, or file archival, route the OTLP stream through an OpenTelemetry collector -- the collector's `splunkhec`, `awss3`, and `file` exporters handle batching, retries, and credentials.
+- **Metrics** -- Prometheus metrics at `/metrics` on the main listener, or on a dedicated listener if `metrics_listen` is set. Tracked metrics include request counts and durations (by route, method, and status), in-flight requests, KV and blob store operation rates and latencies, GC progress, and per-store blob counts and bytes. Pre-built Grafana dashboards live in [`docker/standalone/monitoring/dashboards`](docker/standalone/monitoring/dashboards).
 
 ## Getting Started
 
@@ -41,24 +60,48 @@ Multiple Depot instances can run against shared KV + S3 backends with no coordin
 
 ```bash
 docker build -t depot .
-docker run -p 8080:8080 -v depot-data:/data depot
+docker run -p 8080:8080 -v depot-data:/depot depot
 ```
 
-The image is built `FROM scratch` with a statically-linked musl binary. It runs as a non-root user (uid 65534) and exposes port 8080. Mount a volume at `/data` for persistence and bind-mount your config at `/etc/depot/depotd.toml`.
+The image is built `FROM scratch` with a statically-linked musl binary and runs as non-root (uid 65534). It ships a baked-in config at `/etc/depot/depotd.toml` that writes the embedded redb database to `/depot/db`, so a named volume mounted at `/depot` is all that's needed for persistence. Override the config by bind-mounting your own file at `/etc/depot/depotd.toml`. On first start a random admin password is generated and printed to the container log; grep for it with `docker logs <container>`. After logging in, create a filesystem blob store rooted at `/depot/blobs` (via the UI or the API):
+
+```bash
+curl -u admin:<generated-password> -X POST http://localhost:8080/api/v1/stores \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"default","store_type":"file","root":"/depot/blobs"}'
+```
+
+### Docker Compose
+
+Pre-built compose stacks live under [`docker/`](docker/):
+
+- [`docker/standalone`](docker/standalone) -- single depot instance with an embedded redb + filesystem store, plus an optional monitoring profile (Grafana, Prometheus, Tempo, Loki)
+- [`docker/distributed`](docker/distributed) -- three depot instances sharing ScyllaDB (DynamoDB Alternator) and Garage (S3)
+- [`docker/aws`](docker/aws) -- single instance wired to AWS DynamoDB and S3
+
+```bash
+cd docker/standalone && docker compose up
+```
+
+### Helm
+
+A Helm chart is under [`charts/depot`](charts/depot) with three profiles:
+
+```bash
+helm install depot ./charts/depot                                      # standalone (redb + PVC)
+helm install depot ./charts/depot -f charts/depot/values-distributed.yaml  # DynamoDB + S3
+helm install depot ./charts/depot -f charts/depot/values-aws.yaml          # AWS DynamoDB + S3
+```
 
 ### Build from Source
 
 ```bash
 make          # lint, build, and test everything
-
-# run with defaults (listens on 0.0.0.0:8080)
-./target/debug/depot
-
-# or with a config file
-./target/debug/depot -c etc/depotd.toml
+./target/debug/depot                    # run with defaults (listens on 0.0.0.0:8080)
+./target/debug/depot -c etc/depotd.toml # run with a custom config
 ```
 
-Requires Rust 1.75+ and Node.js (for the frontend build, which is driven automatically by `build.rs`).
+Requires a recent stable Rust toolchain and Node.js; the Vue frontend is built automatically by `ui/build.rs`.
 
 ## Usage
 
@@ -94,9 +137,26 @@ docker push localhost:8080/docker-local/myimage:latest
 docker pull localhost:8080/docker-local/myimage:latest
 ```
 
+Clone a repository (instant, no blob data copied):
+
+```bash
+curl -u admin:admin -X POST http://localhost:8080/api/v1/repositories/my-raw/clone \
+  -H 'Content-Type: application/json' \
+  -d '{"new_name":"my-raw-snapshot"}'
+```
+
+## Binaries
+
+Artifact Depot's workspace ships two binaries:
+
+- **`depot`** (crate: [`server/`](server)) -- the server
+- **`depot-bench`** (crate: [`bench/`](bench)) -- demo seeding and benchmarking (`depot-bench demo`, `depot-bench bench`)
+
+The rest of the workspace is split into focused crates: [`core/`](core) (trait-level abstractions), [`ui/`](ui) (embedded Vue frontend + `rust-embed`), [`kv/redb`](kv/redb) and [`kv/dynamo`](kv/dynamo) (KV backends), [`blob/file`](blob/file) and [`blob/s3`](blob/s3) (blob backends), and [`format/*`](format) (one crate per artifact format).
+
 ## Documentation
 
-See the [`docs/`](docs/) directory:
+Browse the rendered site at <https://artifact-depot.github.io/artifact-depot/>, or read the source under [`docs/`](docs/):
 
 - [Architecture](docs/architecture.md) -- storage, consistency model, clustering, GC, logging, and auth
 - [Configuration](docs/configuration.md) -- TOML config reference, runtime settings, and blob store management
@@ -104,31 +164,6 @@ See the [`docs/`](docs/) directory:
 
 ## Code Coverage
 
-`make coverage` runs the full test suite against both the redb and DynamoDB backends in parallel with LLVM source-based coverage instrumentation, then merges the results into a single report.
-
-```
-Filename                                         Regions    Missed Regions     Cover   Functions  Missed Functions  Executed       Lines      Missed Lines     Cover
---------------------------------------------------------------------------------------------------------------------------------------------------------------------
-depot-bench/src/client.rs                           1194               222    81.41%          85                 7    91.76%         843                78    90.75%
-depot-bench/src/demo/docker.rs                       518                 9    98.26%          26                 0   100.00%         251                 1    99.60%
-depot-bench/src/runner/stats.rs                      348                 0   100.00%          24                 0   100.00%         243                 0   100.00%
-depot/src/server/api/artifacts.rs                    707               109    84.58%          28                 2    92.86%         454                51    88.77%
-depot/src/server/api/cargo.rs                        727               107    85.28%          43                 4    90.70%         467                47    89.94%
-depot/src/server/api/docker.rs                      3194               724    77.33%         164                35    78.66%        1899               412    78.30%
-depot/src/server/api/npm.rs                         1279               179    86.00%          78                 6    92.31%         774               100    87.08%
-depot/src/server/api/pypi.rs                        1263               207    83.61%          45                 5    88.89%         759               119    84.32%
-depot/src/server/api/yum.rs                          918               140    84.75%          47                 4    91.49%         528                77    85.42%
-depot/src/server/auth.rs                             341                11    96.77%          41                 2    95.12%         209                 9    95.69%
-depot/src/server/blob_reaper.rs                     1507               315    79.10%          54                 6    88.89%         869               212    75.60%
-depot/src/server/cluster.rs                          846                96    88.65%          67                 4    94.03%         476                48    89.92%
-depot/src/server/service.rs                         1616               355    78.03%         141                23    83.69%         924               175    81.06%
-depot/src/server/store/dynamo_kv.rs                  234                44    81.20%          30                10    66.67%         155                17    89.03%
-depot/src/server/store/file_blob.rs                  565                43    92.39%          49                 0   100.00%         270                 9    96.67%
-depot/src/server/store/s3_blob.rs                    591                79    86.63%          55                11    80.00%         319                58    81.82%
-depot/tests/integration.rs                          3841                10    99.74%         158                 1    99.37%        2689                 4    99.85%
-...
---------------------------------------------------------------------------------------------------------------------------------------------------------------------
-TOTAL                                              67449              7893    88.30%        3624               404    88.85%       39759              4734    88.09%
-```
+`make coverage` runs the full test suite against both the redb and DynamoDB backends in parallel with LLVM source-based coverage instrumentation, then merges the results into a single report. Tests include Rust unit and integration tests, Playwright UI tests, and format-compatibility tests that run real client tools (`docker`, `npm`, `pip`, `apt`, `dnf`, `cargo`, `helm`, `go`) against Depot in Docker containers.
 
 HTML report: `build/coverage/html/index.html`. Requires `cargo-llvm-cov` (installed automatically if missing). DynamoDB coverage requires [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html); if the JAR is not present, only redb backend tests are included.

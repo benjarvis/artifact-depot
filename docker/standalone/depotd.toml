@@ -11,11 +11,19 @@ path = "/data/kv"
 # Uncomment for production:
 # server_secret = "replace-with-a-random-secret"
 
-# Uncomment to enable OpenTelemetry tracing (requires --profile monitoring):
-# [tracing]
-# otlp_endpoint = "http://otel-collector:4317"
-# service_name = "depot"
-# deployment_environment = "dev"
+# OpenTelemetry tracing.  Points at the otel-collector service inside
+# the compose network; when the monitoring profile is not active the
+# endpoint is unreachable and depot logs a startup warning but runs
+# unaffected otherwise.  With `--profile monitoring` the traces are
+# forwarded to Tempo and rendered in Grafana.
+[tracing]
+otlp_endpoint = "http://otel-collector:4317"
+service_name = "depot"
+deployment_environment = "dev"
+
+# OpenTelemetry logs on the same collector.
+[logging]
+otlp_endpoint = "http://otel-collector:4317"
 
 # Default blob store is auto-created on first start.
 [initialization]

@@ -37,6 +37,42 @@ RUN RUST_TARGET=$(cat /rust-target) \
 # by the unprivileged user (scratch has no mkdir/chown).
 RUN mkdir -p /data-layout/kv /data-layout/blobs
 
+# Pre-create the data directory so it exists in the runtime image with the
+# correct ownership.  Without this, the empty `VOLUME /depot` declaration
+# below would let Docker create the path on the fly at first mount, owned
+# by root, and our non-root server (uid 65534) would fail with EACCES on
+# its first redb open / blob write.  The placeholder file forces COPY to
+# materialise the directory.
+RUN mkdir -p /out/depot && touch /out/depot/.keep
+
+# Generate a default config baked into the image so the container is usable
+# with just `docker run`. Users can override by bind-mounting their own config
+# at /etc/depot/depotd.toml.
+RUN mkdir -p /out/etc/depot && cat > /out/etc/depot/depotd.toml <<'EOF'
+# Default config baked into the Artifact Depot container image.
+# Override by bind-mounting your own file at /etc/depot/depotd.toml.
+#
+# On first start a random admin password is generated and printed to the
+# container log.  Set `default_admin_password = "..."` here (via your own
+# config) to pick one yourself.
+
+[http]
+listen = "0.0.0.0:8080"
+
+# Embedded redb KV store. Mount /depot as a volume for persistence.
+[kv_store]
+type = "redb"
+path = "/depot/db"
+
+# Blob stores are managed via the REST API, not this file.  On first start
+# (from the UI or curl, using the admin password printed to the container
+# log), create a filesystem blob store rooted at /depot/blobs:
+#
+#   curl -u admin:<password> -X POST http://localhost:8080/api/v1/stores \
+#     -H 'Content-Type: application/json' \
+#     -d '{"name":"default","store_type":"file","root":"/depot/blobs"}'
+EOF
+
 # --- Runtime stage ---
 FROM scratch
 

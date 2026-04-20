@@ -45,7 +45,7 @@ fn multipart_file_upload_request(
 /// Build a YUM RPM upload multipart request.
 pub fn yum_upload_request(repo: &str, filename: &str, data: &[u8], token: &str) -> Request<Body> {
     multipart_file_upload_request(
-        &format!("/yum/{}/upload", repo),
+        &format!("/repository/{}/upload", repo),
         "file",
         filename,
         data,
@@ -84,7 +84,7 @@ pub fn yum_upload_request_with_dir(
 
     Request::builder()
         .method(Method::POST)
-        .uri(format!("/yum/{}/upload", repo))
+        .uri(format!("/repository/{}/upload", repo))
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(
             header::CONTENT_TYPE,

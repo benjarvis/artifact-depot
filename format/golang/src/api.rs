@@ -9,10 +9,8 @@
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    Extension,
 };
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
@@ -21,29 +19,78 @@ use depot_core::auth::AuthenticatedUser;
 use depot_core::error::DepotError;
 use depot_core::format_state::FormatState;
 use depot_core::service;
-use depot_core::store::kv::{
-    ArtifactFormat, Capability, RepoConfig, RepoKind, RepoType, UpstreamAuth,
-};
+use depot_core::store::kv::{ArtifactFormat, RepoConfig, RepoKind, RepoType, UpstreamAuth};
 
 use crate::store::{self as golang, GolangStore};
 
 // =============================================================================
-// POST /golang/{repo}/upload — custom upload endpoint
+// /repository/{repo}/... dispatch for Golang repos (reads)
 // =============================================================================
 
-pub async fn upload(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path(repo_name): Path<String>,
-    mut multipart: Multipart,
-) -> Result<Response, DepotError> {
-    let (target_repo, target_config, blobs) = depot_core::api_helpers::upload_preamble(
-        &state,
+pub async fn try_handle_repository_path(
+    state: &FormatState,
+    config: &RepoConfig,
+    path: &str,
+    query: Option<&str>,
+) -> Option<Response> {
+    let _ = query;
+    // Parse the GOPROXY path
+    let (module_encoded, action) = parse_goproxy_path(path)?;
+    let module = golang::decode_module_path(&module_encoded);
+
+    Some(match config.repo_type() {
+        RepoType::Hosted => handle_hosted(state, &config.name, &module, &action).await,
+        RepoType::Cache => handle_cache(state, config, &module, &module_encoded, &action).await,
+        RepoType::Proxy => handle_proxy(state, config, &module, &action).await,
+    })
+}
+
+// =============================================================================
+// /repository/{repo}/... dispatch for Golang repos (writes)
+// =============================================================================
+
+/// Handle a write request under `/repository/{repo}/<path>` for a Golang repo.
+/// Returns `None` if the (method, path) combination is not a Go write.
+pub async fn try_handle_repository_write(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Option<Response> {
+    if method == Method::POST && path == "upload" {
+        return Some(handle_upload(state, user, config, method, headers, body).await);
+    }
+    None
+}
+
+async fn handle_upload(
+    state: &FormatState,
+    user: &AuthenticatedUser,
+    config: &RepoConfig,
+    method: &Method,
+    headers: &HeaderMap,
+    body: Body,
+) -> Response {
+    let (target_repo, target_config, blobs) = match depot_core::api_helpers::upload_preamble(
+        state,
         &user.0,
-        &repo_name,
+        &config.name,
         ArtifactFormat::Golang,
     )
-    .await?;
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let mut multipart =
+        match depot_core::api_helpers::multipart_from_body(method, headers, body).await {
+            Ok(m) => m,
+            Err(e) => return e,
+        };
 
     // Parse multipart fields: module, version, plus file fields (info, mod, zip).
     // info and mod are tiny (<1KB) — buffer them. zip can be large — stream to BlobWriter.
@@ -51,7 +98,7 @@ pub async fn upload(
     let mut version = None;
     let mut info_data: Option<Vec<u8>> = None;
     let mut mod_data: Option<Vec<u8>> = None;
-    let mut zip_blob: Option<(String, String, String, u64)> = None; // (blob_id, blake3, sha256, size)
+    let mut zip_blob: Option<(String, String, String, u64)> = None;
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
         let field_name = field.name().unwrap_or("").to_string();
@@ -68,17 +115,15 @@ pub async fn upload(
             "mod" => {
                 mod_data = field.bytes().await.ok().map(|b| b.to_vec());
             }
-            "zip" => {
-                match depot_core::api_helpers::stream_multipart_field_to_blob(
-                    &mut field,
-                    blobs.as_ref(),
-                )
-                .await
-                {
-                    Ok(r) => zip_blob = Some((r.blob_id, r.blake3, r.sha256, r.size)),
-                    Err(e) => return Err(e),
-                }
-            }
+            "zip" => match depot_core::api_helpers::stream_multipart_field_to_blob(
+                &mut field,
+                blobs.as_ref(),
+            )
+            .await
+            {
+                Ok(r) => zip_blob = Some((r.blob_id, r.blake3, r.sha256, r.size)),
+                Err(e) => return e.into_response(),
+            },
             _ => {
                 let _ = field.bytes().await;
             }
@@ -87,11 +132,11 @@ pub async fn upload(
 
     let module_name = match module_name {
         Some(n) => n,
-        None => return Err(DepotError::BadRequest("missing 'module' field".into())),
+        None => return DepotError::BadRequest("missing 'module' field".into()).into_response(),
     };
     let version = match version {
         Some(v) => v,
-        None => return Err(DepotError::BadRequest("missing 'version' field".into())),
+        None => return DepotError::BadRequest("missing 'version' field".into()).into_response(),
     };
 
     let store = GolangStore {
@@ -104,19 +149,25 @@ pub async fn upload(
 
     // Store each provided file type.
     if let Some(data) = info_data {
-        store
+        if let Err(e) = store
             .put_module_file(&module_name, &version, "info", &data)
             .await
-            .inspect_err(|e| tracing::error!(error = %e, "golang upload info failed"))?;
+        {
+            tracing::error!(error = %e, "golang upload info failed");
+            return e.into_response();
+        }
     }
     if let Some(data) = mod_data {
-        store
+        if let Err(e) = store
             .put_module_file(&module_name, &version, "mod", &data)
             .await
-            .inspect_err(|e| tracing::error!(error = %e, "golang upload mod failed"))?;
+        {
+            tracing::error!(error = %e, "golang upload mod failed");
+            return e.into_response();
+        }
     }
     if let Some((blob_id, blake3, sha256, size)) = zip_blob {
-        store
+        if let Err(e) = store
             .commit_module_file(
                 &module_name,
                 &version,
@@ -129,70 +180,13 @@ pub async fn upload(
                 },
             )
             .await
-            .inspect_err(|e| tracing::error!(error = %e, "golang upload zip failed"))?;
+        {
+            tracing::error!(error = %e, "golang upload zip failed");
+            return e.into_response();
+        }
     }
 
-    Ok(StatusCode::OK.into_response())
-}
-
-// =============================================================================
-// /repository/{repo}/ dispatch for Golang repos
-// =============================================================================
-
-pub async fn try_handle_repository_path(
-    state: &FormatState,
-    config: &RepoConfig,
-    path: &str,
-) -> Option<Response> {
-    // Parse the GOPROXY path
-    let (module_encoded, action) = parse_goproxy_path(path)?;
-    let module = golang::decode_module_path(&module_encoded);
-
-    Some(match config.repo_type() {
-        RepoType::Hosted => handle_hosted(state, &config.name, &module, &action).await,
-        RepoType::Cache => handle_cache(state, config, &module, &module_encoded, &action).await,
-        RepoType::Proxy => handle_proxy(state, config, &module, &action).await,
-    })
-}
-
-// =============================================================================
-// GET /golang/{repo}/{*path} — GOPROXY protocol handler
-// =============================================================================
-
-pub async fn golang_get(
-    State(state): State<FormatState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Path((repo_name, path)): Path<(String, String)>,
-) -> Result<Response, DepotError> {
-    let config =
-        depot_core::api_helpers::validate_format_repo(&state, &repo_name, ArtifactFormat::Golang)
-            .await?;
-
-    state
-        .auth
-        .check_permission(&user.0, &repo_name, Capability::Read)
-        .await?;
-
-    // Parse the path to extract module and action.
-    // Possible patterns:
-    //   {module}/@v/list
-    //   {module}/@v/{version}.info
-    //   {module}/@v/{version}.mod
-    //   {module}/@v/{version}.zip
-    //   {module}/@latest
-    let (module_encoded, action) = match parse_goproxy_path(&path) {
-        Some(v) => v,
-        None => {
-            return Err(DepotError::NotFound("invalid Go module path".into()));
-        }
-    };
-    let module = golang::decode_module_path(&module_encoded);
-
-    Ok(match config.repo_type() {
-        RepoType::Hosted => handle_hosted(&state, &repo_name, &module, &action).await,
-        RepoType::Cache => handle_cache(&state, &config, &module, &module_encoded, &action).await,
-        RepoType::Proxy => handle_proxy(&state, &config, &module, &action).await,
-    })
+    StatusCode::OK.into_response()
 }
 
 /// Parsed action from a GOPROXY path.

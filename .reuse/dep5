@@ -28,7 +28,12 @@ Copyright: 2026 Artifact Depot Contributors
 License: Apache-2.0
 
 # SVG assets
-Files: ui/frontend/src/assets/*.svg ui/frontend/public/*.svg
+Files: ui/frontend/src/assets/*.svg ui/frontend/public/*.svg docs/assets/*.svg
+Copyright: 2026 Artifact Depot Contributors
+License: Apache-2.0
+
+# Documentation site build files and generated screenshots
+Files: docs/Gemfile.lock docs/_includes/*.html docs/screenshots/*.png docs/screenshots/**/*.png
 Copyright: 2026 Artifact Depot Contributors
 License: Apache-2.0
 

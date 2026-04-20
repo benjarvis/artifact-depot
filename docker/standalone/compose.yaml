@@ -113,10 +113,24 @@ services:
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      # Server-side dashboard rendering via the `renderer` sidecar.
+      GF_RENDERING_SERVER_URL: http://renderer:8081/render
+      GF_RENDERING_CALLBACK_URL: http://grafana:3000/
     volumes:
       - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - ./monitoring/grafana-dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/default.yaml:ro
       - ./monitoring/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+
+  # Grafana Image Renderer — runs headless Chromium inside a sidecar so
+  # Grafana can server-side-render dashboard PNGs via /render/d/{uid}.
+  # Used by `make observability-screenshots` to produce the docs images
+  # and also available for alert-rule image attachments, PDF reports, etc.
+  renderer:
+    image: grafana/grafana-image-renderer:latest
+    profiles: [monitoring]
+    environment:
+      ENABLE_METRICS: "false"
     restart: unless-stopped
 
 volumes:

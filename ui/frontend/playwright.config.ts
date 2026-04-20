@@ -33,13 +33,29 @@ export default defineConfig({
   projects: [
     {
       name: 'parallel',
-      testIgnore: /\b(tasks|settings)\b.*\.spec\.ts$/,
+      testIgnore: /\b(tasks|settings|screenshots|observability-screenshots)\b.*\.spec\.ts$/,
       use: chromiumOptions,
     },
     {
       name: 'serial',
       testMatch: /\b(tasks|settings)\b.*\.spec\.ts$/,
       dependencies: ['parallel'],
+      use: chromiumOptions,
+    },
+    // Curated screenshot capture for the docs site. Not part of `npx
+    // playwright test` by default -- run via `make screenshots` (which
+    // also seeds the depot with realistic data first).
+    {
+      name: 'screenshots',
+      testMatch: '**/screenshots.spec.ts',
+      use: chromiumOptions,
+    },
+    // Observability screenshots -- drives Chromium at Grafana to capture
+    // dashboards / traces / logs from a monitoring-profile compose stack.
+    // Run via `make observability-screenshots`.
+    {
+      name: 'observability',
+      testMatch: '**/observability-screenshots.spec.ts',
       use: chromiumOptions,
     },
   ],

@@ -825,10 +825,14 @@ pub async fn assert_nonexistent_repo_404(app: &TestApp, path: &str) {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// Assert that accessing a repo with the wrong format returns 400.
+/// Assert that a format-specific URL shape on a Raw repo falls through to the
+/// generic artifact lookup and 404s. Under the unified `/repository/{repo}/...`
+/// router the URL shape is no longer tied to a format, so there is no 400
+/// "wrong format" response — the request just looks for an artifact that
+/// doesn't exist.
 pub async fn assert_wrong_format_rejected(app: &TestApp, path: &str) {
     app.create_hosted_repo("raw-repo").await;
     let req = app.auth_request(Method::GET, path, &app.admin_token());
     let (status, _) = app.call(req).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
