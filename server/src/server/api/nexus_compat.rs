@@ -26,8 +26,9 @@ use serde::{Deserialize, Serialize};
 use depot_core::auth::AuthenticatedUser;
 use depot_core::error::{self, DepotError};
 use depot_core::format_state::FormatState;
+use depot_core::repo::{make_raw_repo, RawRepo};
 use depot_core::service;
-use depot_core::store::kv::{ArtifactFormat, ArtifactRecord, Capability, KvStore, Pagination};
+use depot_core::store::kv::{ArtifactFormat, ArtifactRecord, Capability, Pagination};
 use depot_format_apt::store::AptStore;
 use depot_format_helm::store::HelmStore;
 use depot_format_pypi::store::PypiStore;
@@ -164,13 +165,22 @@ fn effective_limit(requested: Option<usize>) -> usize {
     }
 }
 
-/// Accumulate artifacts across multiple KV scans (each capped at [`SCAN_LIMIT`])
-/// to satisfy `requested` count without inflating per-shard batch sizes.
+#[derive(Copy, Clone)]
+enum CollectMode<'a> {
+    Search { query: &'a str },
+    List { prefix: &'a str },
+}
+
+/// Accumulate artifacts from the repository (hosted, cache, or proxy) via the
+/// [`RawRepo`] abstraction. Each underlying scan is capped at [`SCAN_LIMIT`]
+/// so proxy repos with many members don't inflate per-shard batch sizes.
+///
+/// For proxy repos this delegates to `ProxyRepo::search` / `ProxyRepo::list`,
+/// which interleave results from members under a single resumable
+/// path-based cursor (see [`depot_core::repo::proxy::ProxyRepo`]).
 async fn collect_artifacts(
-    kv: &dyn KvStore,
-    repo: &str,
-    prefix: &str,
-    query: &str,
+    repo: &dyn RawRepo,
+    mode: CollectMode<'_>,
     initial_cursor: Option<String>,
     requested: usize,
 ) -> error::Result<(Vec<(String, ArtifactRecord)>, Option<String>)> {
@@ -185,10 +195,9 @@ async fn collect_artifacts(
             cursor,
         };
 
-        let page = if !query.is_empty() {
-            service::search_artifacts(kv, repo, query, &pagination).await?
-        } else {
-            service::list_artifacts(kv, repo, prefix, &pagination).await?
+        let page = match mode {
+            CollectMode::Search { query } => repo.search(query, &pagination).await?,
+            CollectMode::List { prefix } => repo.list(prefix, &pagination).await?,
         };
 
         all_items.extend(page.items);
@@ -199,6 +208,13 @@ async fn collect_artifacts(
     }
 
     Ok((all_items, cursor))
+}
+
+fn collect_mode<'a>(prefix: &'a str, query: &'a Option<String>) -> CollectMode<'a> {
+    match query.as_deref() {
+        Some(q) if !q.is_empty() => CollectMode::Search { query: q },
+        _ => CollectMode::List { prefix },
+    }
 }
 
 /// Build (prefix, query) from the Nexus group/name/q parameters.
@@ -302,28 +318,34 @@ pub async fn search_assets(
         return (StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
+    let repo_config = match service::get_repo(state.kv.as_ref(), &repo_name).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return DepotError::NotFound(format!("repository '{}' not found", repo_name))
+                .into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let blobs = match state.blob_store(&repo_config.store).await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let repo = make_raw_repo(state.repo_context(blobs), &repo_config);
+    let format_str = repo_config.format().to_string();
+
     let (prefix, query) = build_search_params(&params);
-    let search_query = query.as_deref().unwrap_or("");
+    let mode = collect_mode(&prefix, &query);
     let requested = effective_limit(params.limit);
 
     match collect_artifacts(
-        state.kv.as_ref(),
-        &repo_name,
-        &prefix,
-        search_query,
+        repo.as_ref(),
+        mode,
         params.continuation_token.clone(),
         requested,
     )
     .await
     {
         Ok((collected, continuation_token)) => {
-            let format_str = service::get_repo(state.kv.as_ref(), &repo_name)
-                .await
-                .ok()
-                .flatten()
-                .map(|c| c.format().to_string())
-                .unwrap_or_default();
-
             let items: Vec<NexusAssetItem> = collected
                 .iter()
                 .map(|(path, record)| NexusAssetItem {
@@ -385,7 +407,22 @@ pub async fn search_assets_download(
         return (StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
+    let repo_config = match service::get_repo(state.kv.as_ref(), &repo_name).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return DepotError::NotFound(format!("repository '{}' not found", repo_name))
+                .into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let blobs = match state.blob_store(&repo_config.store).await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let repo = make_raw_repo(state.repo_context(blobs), &repo_config);
+
     let (prefix, query) = build_search_params(&params);
+    let mode = collect_mode(&prefix, &query);
 
     let pagination = Pagination {
         limit: 1,
@@ -393,11 +430,9 @@ pub async fn search_assets_download(
         cursor: None,
     };
 
-    let search_query = query.as_deref().unwrap_or("");
-    let results = if !search_query.is_empty() {
-        service::search_artifacts(state.kv.as_ref(), &repo_name, search_query, &pagination).await
-    } else {
-        service::list_artifacts(state.kv.as_ref(), &repo_name, &prefix, &pagination).await
+    let results = match mode {
+        CollectMode::Search { query } => repo.search(query, &pagination).await,
+        CollectMode::List { prefix } => repo.list(prefix, &pagination).await,
     };
 
     match results {
@@ -451,28 +486,34 @@ pub async fn search_components(
         return (StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
+    let repo_config = match service::get_repo(state.kv.as_ref(), &repo_name).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return DepotError::NotFound(format!("repository '{}' not found", repo_name))
+                .into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let blobs = match state.blob_store(&repo_config.store).await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let repo = make_raw_repo(state.repo_context(blobs), &repo_config);
+    let format_str = repo_config.format().to_string();
+
     let (prefix, query) = build_search_params(&params);
-    let search_query = query.as_deref().unwrap_or("");
+    let mode = collect_mode(&prefix, &query);
     let requested = effective_limit(params.limit);
 
     match collect_artifacts(
-        state.kv.as_ref(),
-        &repo_name,
-        &prefix,
-        search_query,
+        repo.as_ref(),
+        mode,
         params.continuation_token.clone(),
         requested,
     )
     .await
     {
         Ok((collected, continuation_token)) => {
-            let format_str = service::get_repo(state.kv.as_ref(), &repo_name)
-                .await
-                .ok()
-                .flatten()
-                .map(|c| c.format().to_string())
-                .unwrap_or_default();
-
             let items: Vec<NexusComponentItem> = collected
                 .iter()
                 .map(|(path, record)| {

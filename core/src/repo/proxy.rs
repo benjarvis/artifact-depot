@@ -329,6 +329,14 @@ impl RawRepo for ProxyRepo {
         self.search(query, pagination).await
     }
 
+    async fn list(
+        &self,
+        prefix: &str,
+        pagination: &Pagination,
+    ) -> error::Result<PaginatedResult<(String, ArtifactRecord)>> {
+        self.list(prefix, pagination).await
+    }
+
     async fn list_children(&self, prefix: &str) -> error::Result<crate::store::kv::ChildrenResult> {
         self.list_children(prefix).await
     }

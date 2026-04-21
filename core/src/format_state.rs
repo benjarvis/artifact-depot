@@ -90,4 +90,15 @@ impl FormatState {
             crate::error::DepotError::NotFound(format!("blob store '{}' not found", store_name))
         })
     }
+
+    /// Build a [`crate::repo::RepoContext`] with a resolved blob store.
+    pub fn repo_context(&self, blobs: Arc<dyn BlobStore>) -> crate::repo::RepoContext {
+        crate::repo::RepoContext {
+            kv: Arc::clone(&self.kv),
+            blobs,
+            http: self.http.clone(),
+            inflight: self.inflight.clone(),
+            updater: self.updater.clone(),
+        }
+    }
 }

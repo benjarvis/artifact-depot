@@ -158,6 +158,14 @@ impl RawRepo for HostedRepo {
         service::search_artifacts(self.kv.as_ref(), &self.name, query, pagination).await
     }
 
+    async fn list(
+        &self,
+        prefix: &str,
+        pagination: &Pagination,
+    ) -> error::Result<PaginatedResult<(String, ArtifactRecord)>> {
+        service::list_artifacts(self.kv.as_ref(), &self.name, prefix, pagination).await
+    }
+
     async fn list_children(&self, prefix: &str) -> error::Result<crate::store::kv::ChildrenResult> {
         service::list_children(self.kv.as_ref(), &self.name, prefix).await
     }

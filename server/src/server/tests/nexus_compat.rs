@@ -262,6 +262,215 @@ async fn test_nexus_assets_limit_parameter() {
     }
 }
 
+// ===========================================================================
+// Search against Proxy (group) repositories: must interleave member results
+// across a single resumable continuationToken cursor.
+// ===========================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nexus_search_proxy_interleaves_members() {
+    let app = TestApp::new().await;
+    app.create_hosted_repo("nxp-m1").await;
+    app.create_hosted_repo("nxp-m2").await;
+    app.create_format_proxy_repo("nxp-grp", "raw", vec!["nxp-m1", "nxp-m2"])
+        .await;
+
+    let token = app.admin_token();
+    app.upload_artifact("nxp-m1", "dir/a.txt", b"a", &token)
+        .await;
+    app.upload_artifact("nxp-m2", "dir/b.txt", b"b", &token)
+        .await;
+
+    let req = app.auth_request(
+        Method::GET,
+        "/service/rest/v1/search/assets?repository=nxp-grp&name=*.txt",
+        &token,
+    );
+    let (status, body) = app.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    let paths: Vec<&str> = items.iter().map(|i| i["path"].as_str().unwrap()).collect();
+    assert!(
+        paths.contains(&"dir/a.txt"),
+        "proxy search should surface member m1 artifact: paths={paths:?}"
+    );
+    assert!(
+        paths.contains(&"dir/b.txt"),
+        "proxy search should surface member m2 artifact: paths={paths:?}"
+    );
+    for item in items {
+        assert_eq!(item["repository"].as_str().unwrap(), "nxp-grp");
+        assert!(item["downloadUrl"]
+            .as_str()
+            .unwrap()
+            .contains("/repository/nxp-grp/"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nexus_search_components_proxy() {
+    let app = TestApp::new().await;
+    app.create_hosted_repo("nxc-m1").await;
+    app.create_hosted_repo("nxc-m2").await;
+    app.create_format_proxy_repo("nxc-grp", "raw", vec!["nxc-m1", "nxc-m2"])
+        .await;
+
+    let token = app.admin_token();
+    app.upload_artifact("nxc-m1", "pkg/alpha.tar.gz", b"a", &token)
+        .await;
+    app.upload_artifact("nxc-m2", "pkg/beta.tar.gz", b"b", &token)
+        .await;
+
+    let req = app.auth_request(
+        Method::GET,
+        "/service/rest/v1/search?repository=nxc-grp&name=*tar.gz",
+        &token,
+    );
+    let (status, body) = app.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    let names: Vec<&str> = items.iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"alpha.tar.gz"), "names={names:?}");
+    assert!(names.contains(&"beta.tar.gz"), "names={names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nexus_search_proxy_download_redirects_to_member() {
+    let app = TestApp::new().await;
+    app.create_hosted_repo("nxd-m1").await;
+    app.create_hosted_repo("nxd-m2").await;
+    app.create_format_proxy_repo("nxd-grp", "raw", vec!["nxd-m1", "nxd-m2"])
+        .await;
+
+    let token = app.admin_token();
+    app.upload_artifact("nxd-m2", "report.txt", b"only-in-m2", &token)
+        .await;
+
+    let req = app.auth_request(
+        Method::GET,
+        "/service/rest/v1/search/assets/download?repository=nxd-grp&name=*report*",
+        &token,
+    );
+    let resp = app.call_resp(req).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    // The redirect points at the proxy, which will resolve the artifact via
+    // its members on read.
+    assert!(
+        loc.contains("/repository/nxd-grp/report.txt"),
+        "redirect should target the proxy URL: {loc}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nexus_search_proxy_pagination_resumable() {
+    let app = TestApp::new().await;
+    app.create_hosted_repo("nxpag-m1").await;
+    app.create_hosted_repo("nxpag-m2").await;
+    app.create_format_proxy_repo("nxpag-grp", "raw", vec!["nxpag-m1", "nxpag-m2"])
+        .await;
+
+    let token = app.admin_token();
+    for i in 0..5 {
+        app.upload_artifact(
+            "nxpag-m1",
+            &format!("m1-{i:02}.txt"),
+            format!("m1-{i}").as_bytes(),
+            &token,
+        )
+        .await;
+        app.upload_artifact(
+            "nxpag-m2",
+            &format!("m2-{i:02}.txt"),
+            format!("m2-{i}").as_bytes(),
+            &token,
+        )
+        .await;
+    }
+
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        pages += 1;
+        assert!(pages < 20, "pagination did not terminate");
+        let url = match &cursor {
+            Some(c) => format!(
+                "/service/rest/v1/search/assets?repository=nxpag-grp&name=*.txt&limit=3&continuationToken={}",
+                c
+            ),
+            None => {
+                "/service/rest/v1/search/assets?repository=nxpag-grp&name=*.txt&limit=3".to_string()
+            }
+        };
+        let req = app.auth_request(Method::GET, &url, &token);
+        let (status, body) = app.call(req).await;
+        assert_eq!(status, StatusCode::OK);
+        let items = body["items"].as_array().unwrap();
+        for item in items {
+            let path = item["path"].as_str().unwrap().to_string();
+            assert!(
+                seen.insert(path.clone()),
+                "duplicate path {path} across pages"
+            );
+        }
+        match body["continuationToken"].as_str() {
+            Some(t) => cursor = Some(t.to_string()),
+            None => break,
+        }
+    }
+
+    let expected: std::collections::BTreeSet<String> = (0..5)
+        .flat_map(|i| [format!("m1-{i:02}.txt"), format!("m2-{i:02}.txt")])
+        .collect();
+    assert_eq!(
+        seen, expected,
+        "pagination must surface every member artifact exactly once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_nexus_search_proxy_dedup_first_member_wins() {
+    let app = TestApp::new().await;
+    app.create_hosted_repo("nxdup-m1").await;
+    app.create_hosted_repo("nxdup-m2").await;
+    app.create_format_proxy_repo("nxdup-grp", "raw", vec!["nxdup-m1", "nxdup-m2"])
+        .await;
+
+    let token = app.admin_token();
+    // Same path in both members — m1 comes first and should win.
+    app.upload_artifact("nxdup-m1", "same.txt", b"from-m1", &token)
+        .await;
+    app.upload_artifact("nxdup-m2", "same.txt", b"from-m2", &token)
+        .await;
+
+    let req = app.auth_request(
+        Method::GET,
+        "/service/rest/v1/search/assets?repository=nxdup-grp&name=*same*",
+        &token,
+    );
+    let (status, body) = app.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(
+        items.len(),
+        1,
+        "duplicate paths across members must collapse to one entry: {items:?}"
+    );
+    assert_eq!(items[0]["path"].as_str().unwrap(), "same.txt");
+    // The size reflects the blob chosen by first-member-wins; m1's payload is
+    // "from-m1" (7 bytes).
+    assert_eq!(
+        items[0]["fileSize"].as_u64().unwrap(),
+        b"from-m1".len() as u64
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_nexus_assets_limit_clamped() {
     let app = TestApp::new().await;
