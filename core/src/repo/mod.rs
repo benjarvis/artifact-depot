@@ -114,6 +114,11 @@ pub trait RawRepo: Send + Sync {
         query: &str,
         pagination: &Pagination,
     ) -> error::Result<PaginatedResult<(String, ArtifactRecord)>>;
+    async fn list(
+        &self,
+        prefix: &str,
+        pagination: &Pagination,
+    ) -> error::Result<PaginatedResult<(String, ArtifactRecord)>>;
     async fn list_children(&self, prefix: &str) -> error::Result<ChildrenResult>;
 }
 
