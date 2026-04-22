@@ -172,6 +172,9 @@ pub struct BackgroundServices {
     pub gc_state: Arc<tokio::sync::Mutex<crate::server::worker::blob_reaper::GcState>>,
     pub event_bus: Arc<EventBus>,
     pub model: Arc<ModelHandle>,
+    /// Wakes the state scanner immediately on user-initiated KV writes so
+    /// the UI doesn't have to wait for the next periodic scan tick.
+    pub scan_trigger: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone)]
@@ -273,11 +276,7 @@ impl AppState {
             "app state initialized"
         );
         let event_bus = Arc::new(EventBus::new(1024));
-        let tasks = Arc::new(TaskManager::new(
-            Arc::clone(&kv),
-            instance_id.clone(),
-            Some(Arc::clone(&event_bus)),
-        ));
+        let tasks = Arc::new(TaskManager::new(Arc::clone(&kv), instance_id.clone()));
         Ok(Self {
             repo: RepoServices {
                 kv,
@@ -300,6 +299,7 @@ impl AppState {
                 )),
                 event_bus,
                 model: Arc::new(ModelHandle::new(MaterializedModel::empty())),
+                scan_trigger: Arc::new(tokio::sync::Notify::new()),
             },
             settings: Arc::new(SettingsHandle::new(settings)),
             rate_limiter,

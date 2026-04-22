@@ -117,7 +117,6 @@ async fn app_with_cors(cors: Option<CorsConfig>) -> axum::Router {
     let tasks = Arc::new(crate::server::infra::task::TaskManager::new(
         kv.clone(),
         instance_id.clone(),
-        Some(Arc::clone(&event_bus)),
     ));
     let state = AppState {
         repo: crate::server::RepoServices {
@@ -149,6 +148,7 @@ async fn app_with_cors(cors: Option<CorsConfig>) -> axum::Router {
             model: Arc::new(crate::server::infra::event_bus::ModelHandle::new(
                 crate::server::infra::event_bus::MaterializedModel::empty(),
             )),
+            scan_trigger: Arc::new(tokio::sync::Notify::new()),
         },
         settings: Arc::new(SettingsHandle::new(Settings {
             access_log: false,

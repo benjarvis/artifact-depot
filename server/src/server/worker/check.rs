@@ -58,8 +58,6 @@ pub async fn run_check(
     dry_run: bool,
     verify_blob_hashes: bool,
 ) {
-    task_manager.mark_running(task_id).await;
-
     let mode_label = if dry_run { "dry-run" } else { "fix" };
     task_manager
         .append_log(
@@ -1226,7 +1224,6 @@ mod tests {
         let task_manager = Arc::new(TaskManager::new(
             failing_kv.clone() as Arc<dyn KvStore>,
             "check-test-inst".to_string(),
-            None,
         ));
         (failing_kv, registry, task_manager, dir)
     }

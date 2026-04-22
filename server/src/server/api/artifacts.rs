@@ -1720,6 +1720,8 @@ pub async fn start_bulk_delete(
         prefix: prefix.clone(),
     };
     let (task_id, progress_tx, cancel) = state.bg.tasks.create(kind).await;
+    state.bg.tasks.mark_running(task_id).await;
+    state.bg.scan_trigger.notify_one();
 
     let task_manager = state.bg.tasks.clone();
     let kv = Arc::clone(&state.repo.kv);
@@ -1728,7 +1730,6 @@ pub async fn start_bulk_delete(
     let prefix_for_task = prefix.clone();
 
     tokio::spawn(async move {
-        task_manager.mark_running(task_id).await;
         task_manager
             .append_log(
                 task_id,

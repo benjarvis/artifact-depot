@@ -67,6 +67,8 @@ pub async fn start_check(
     }
 
     let (task_id, progress_tx, cancel) = state.bg.tasks.create(TaskKind::Check).await;
+    state.bg.tasks.mark_running(task_id).await;
+    state.bg.scan_trigger.notify_one();
 
     let task_manager = state.bg.tasks.clone();
     let kv = state.repo.kv.clone();
@@ -127,6 +129,8 @@ pub async fn start_gc(
     }
 
     let (task_id, progress_tx, cancel) = state.bg.tasks.create(TaskKind::BlobGc).await;
+    state.bg.tasks.mark_running(task_id).await;
+    state.bg.scan_trigger.notify_one();
 
     let task_manager = state.bg.tasks.clone();
     let kv = state.repo.kv.clone();
@@ -139,7 +143,6 @@ pub async fn start_gc(
         // Persist start time so other instances / the scheduler respect the cooldown.
         let _ = service::set_gc_last_started_at(kv.as_ref(), chrono::Utc::now()).await;
 
-        task_manager.mark_running(task_id).await;
         let mode_label = if dry_run { "dry-run" } else { "live" };
         task_manager
             .append_log(task_id, format!("Starting ad-hoc GC pass ({})", mode_label))
@@ -229,12 +232,13 @@ pub async fn start_rebuild_dir_entries(
     }
 
     let (task_id, progress_tx, cancel) = state.bg.tasks.create(TaskKind::RebuildDirEntries).await;
+    state.bg.tasks.mark_running(task_id).await;
+    state.bg.scan_trigger.notify_one();
 
     let task_manager = state.bg.tasks.clone();
     let kv = state.repo.kv.clone();
 
     tokio::spawn(async move {
-        task_manager.mark_running(task_id).await;
         task_manager
             .append_log(task_id, "Starting full dir-entry rebuild".to_string())
             .await;
@@ -330,6 +334,7 @@ pub async fn delete_task(
         .map_err(|_| DepotError::BadRequest("Invalid task ID".to_string()))?;
     let task_id = TaskId(uuid);
     if state.bg.tasks.delete(task_id).await {
+        state.bg.scan_trigger.notify_one();
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(DepotError::NotFound("Task not found".to_string()))

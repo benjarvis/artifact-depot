@@ -275,11 +275,7 @@ mod tests {
         let stores = Arc::new(StoreRegistry::new());
         let instance_id = "test-instance".to_string();
         let event_bus = Arc::new(EventBus::new(64));
-        let tasks = Arc::new(TaskManager::new(
-            kv.clone(),
-            instance_id.clone(),
-            Some(Arc::clone(&event_bus)),
-        ));
+        let tasks = Arc::new(TaskManager::new(kv.clone(), instance_id.clone()));
         let state = AppState {
             repo: RepoServices {
                 kv,
@@ -306,6 +302,7 @@ mod tests {
                 )),
                 event_bus,
                 model: Arc::new(ModelHandle::new(MaterializedModel::empty())),
+                scan_trigger: Arc::new(tokio::sync::Notify::new()),
             },
             settings: Arc::new(SettingsHandle::new(Settings::default())),
             rate_limiter: Arc::new(DynamicRateLimiter::new(None)),

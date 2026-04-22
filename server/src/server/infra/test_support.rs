@@ -171,11 +171,7 @@ impl TestServer {
         ));
         let instance_id = uuid::Uuid::new_v4().to_string();
         let event_bus = Arc::new(crate::server::infra::event_bus::EventBus::new(1024));
-        let tasks = Arc::new(TaskManager::new(
-            kv.clone(),
-            instance_id.clone(),
-            Some(Arc::clone(&event_bus)),
-        ));
+        let tasks = Arc::new(TaskManager::new(kv.clone(), instance_id.clone()));
         let state = AppState {
             repo: RepoServices {
                 kv,
@@ -206,6 +202,7 @@ impl TestServer {
                 model: Arc::new(crate::server::infra::event_bus::ModelHandle::new(
                     crate::server::infra::event_bus::MaterializedModel::empty(),
                 )),
+                scan_trigger: Arc::new(tokio::sync::Notify::new()),
             },
             settings: Arc::new(SettingsHandle::new(Settings {
                 access_log: false,

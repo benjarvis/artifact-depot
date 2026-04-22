@@ -94,10 +94,12 @@ where
     let settings = settings_handle();
     let cancel = CancellationToken::new();
 
+    let scan_trigger = Arc::new(tokio::sync::Notify::new());
     let scanner_handle = tokio::spawn(run_state_scanner(
         kv.clone(),
         event_bus.clone(),
         settings.clone(),
+        scan_trigger,
         cancel.clone(),
     ));
 
@@ -432,4 +434,79 @@ async fn cleanup_ttl_marks_old_completed_tasks_deleting() {
         .await
         .unwrap()
         .is_none());
+}
+
+/// Regression: when a worker calls `update_summary` immediately followed by
+/// `mark_completed`, the scanner must converge to `Completed` and never
+/// leave the materialized state stuck on `Running` with the new summary.
+///
+/// Background: this used to fail because `TaskManager` published `TaskUpdated`
+/// in-band on `mark_completed`, racing with the scanner's stale-snapshot
+/// publish from a `list_tasks` call taken between `update_summary` and
+/// `mark_completed`. Now that the scanner is the sole publisher, the worst
+/// case is a one-tick flicker that self-heals.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scanner_converges_to_completed_after_update_summary_then_mark_completed() {
+    use crate::server::infra::task::TaskManager;
+    use depot_core::task::{CheckResult, TaskResult};
+
+    let (kv, _dir) = test_kv().await;
+    let mgr = Arc::new(TaskManager::new(kv.clone(), "test-instance".to_string()));
+
+    // Pre-create the task so the scanner sees it before we drive transitions.
+    let (task_id, _tx, _cancel) = mgr.create(TaskKind::Check).await;
+    mgr.mark_running(task_id).await;
+
+    let mgr_clone = mgr.clone();
+    let events = run_scanner_and_collect(
+        kv.clone(),
+        |_kv| async move {
+            // Let the scanner take its baseline snapshot.
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            // Reproduce the racey worker tail: update_summary then a fast
+            // mark_completed. The scanner's tick may snapshot the KV between
+            // these two writes.
+            mgr_clone
+                .update_summary(task_id, "Complete: 100 passed".to_string())
+                .await;
+            mgr_clone
+                .mark_completed(task_id, TaskResult::Check(CheckResult::default()))
+                .await;
+
+            // Give the scanner several ticks to converge.
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        },
+        700,
+    )
+    .await;
+
+    let task_id_str = task_id.to_string();
+    let last_status_for_task = events
+        .iter()
+        .filter_map(|e| match (&e.topic, &e.event) {
+            (Topic::Tasks, ModelEvent::TaskCreated { task })
+            | (Topic::Tasks, ModelEvent::TaskUpdated { task })
+                if task.id.to_string() == task_id_str =>
+            {
+                Some(task.status)
+            }
+            _ => None,
+        })
+        .last();
+
+    assert_eq!(
+        last_status_for_task,
+        Some(TaskStatus::Completed),
+        "scanner should converge to Completed; got {:?}",
+        last_status_for_task
+    );
+
+    // KV is the source of truth — verify it agrees.
+    let final_record = task_svc::get_task_summary(kv.as_ref(), &task_id_str)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_record.status, TaskStatus::Completed);
+    assert_eq!(final_record.summary, "Complete: 100 passed");
 }

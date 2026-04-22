@@ -20,7 +20,6 @@ use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::server::infra::event_bus::{EventBus, ModelEvent, Topic};
 use depot_core::service::task as task_svc;
 use depot_core::store::kv::{KvStore, TaskRecord};
 
@@ -116,28 +115,22 @@ struct OwnedTask {
 pub struct TaskManager {
     kv: Arc<dyn KvStore>,
     instance_id: String,
-    event_bus: Option<Arc<EventBus>>,
     owned: Mutex<HashMap<TaskId, OwnedTask>>,
 }
 
 impl TaskManager {
     /// Create a new KV-backed task manager.
-    pub fn new(
-        kv: Arc<dyn KvStore>,
-        instance_id: String,
-        event_bus: Option<Arc<EventBus>>,
-    ) -> Self {
+    ///
+    /// Lifecycle changes (create, mark_running, mark_terminal, delete,
+    /// update_summary) only write to KV — they do not publish events. The
+    /// state scanner is the sole publisher of task events; HTTP handlers
+    /// can call `BackgroundServices::scan_trigger.notify_one()` after a KV
+    /// write to wake the scanner immediately for snappy UX.
+    pub fn new(kv: Arc<dyn KvStore>, instance_id: String) -> Self {
         Self {
             kv,
             instance_id,
-            event_bus,
             owned: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn publish(&self, event: ModelEvent) {
-        if let Some(ref bus) = self.event_bus {
-            bus.publish(Topic::Tasks, event);
         }
     }
 
@@ -201,11 +194,6 @@ impl TaskManager {
                 },
             );
         }
-
-        // Publish locally so the owner's UI sees the new task immediately.
-        self.publish(ModelEvent::TaskCreated {
-            task: TaskInfo::from_record(&record),
-        });
 
         (id, progress_tx, cancel)
     }
@@ -282,10 +270,6 @@ impl TaskManager {
                 }
             });
         }
-
-        self.publish(ModelEvent::TaskUpdated {
-            task: TaskInfo::from_record(&record),
-        });
     }
 
     /// Transition task to `Completed` with a result.
@@ -333,10 +317,6 @@ impl TaskManager {
         drop(owned);
 
         self.put_record(&record).await;
-
-        self.publish(ModelEvent::TaskUpdated {
-            task: TaskInfo::from_record(&record),
-        });
     }
 
     /// Fire the cancellation token for a running/pending task. Returns true
@@ -453,7 +433,6 @@ impl TaskManager {
             return false;
         }
 
-        self.publish(ModelEvent::TaskDeleted { id: id_str });
         true
     }
 
@@ -520,7 +499,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let mgr = TaskManager::new(kv, "test-inst".to_string(), None);
+        let mgr = TaskManager::new(kv, "test-inst".to_string());
         (mgr, dir)
     }
 

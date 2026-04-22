@@ -174,7 +174,6 @@ async fn test_app_setup() -> TestAppSetup {
     let tasks = Arc::new(depot_server::server::infra::task::TaskManager::new(
         kv.clone(),
         instance_id.clone(),
-        Some(Arc::clone(&event_bus)),
     ));
     let state = AppState {
         repo: depot_server::server::RepoServices {
@@ -208,6 +207,7 @@ async fn test_app_setup() -> TestAppSetup {
             model: Arc::new(depot_server::server::infra::event_bus::ModelHandle::new(
                 depot_server::server::infra::event_bus::MaterializedModel::empty(),
             )),
+            scan_trigger: Arc::new(tokio::sync::Notify::new()),
         },
         settings: Arc::new(SettingsHandle::new(Settings {
             access_log: false,

@@ -695,7 +695,7 @@ async fn run_blob_reaper_acquires_lease_and_runs_gc() {
     let cancel = CancellationToken::new();
     // gc_interval=0 so GC fires on the first 60s tick.
     let settings = test_settings(0);
-    let task_manager = Arc::new(TaskManager::new(kv.clone(), "test-instance".into(), None));
+    let task_manager = Arc::new(TaskManager::new(kv.clone(), "test-instance".into()));
 
     let reaper = tokio::spawn({
         let kv = kv.clone();
@@ -755,7 +755,7 @@ async fn run_blob_reaper_shutdown_releases_lease() {
 
     let cancel = CancellationToken::new();
     let settings = test_settings(0);
-    let task_manager = Arc::new(TaskManager::new(kv.clone(), "test-instance".into(), None));
+    let task_manager = Arc::new(TaskManager::new(kv.clone(), "test-instance".into()));
 
     let reaper = tokio::spawn({
         let kv = kv.clone();
