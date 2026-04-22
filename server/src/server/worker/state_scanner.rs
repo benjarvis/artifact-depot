@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::server::api::repositories::RepoResponse;
@@ -70,6 +71,7 @@ pub async fn run_state_scanner(
     kv: Arc<dyn KvStore>,
     event_bus: Arc<EventBus>,
     settings: Arc<SettingsHandle>,
+    scan_trigger: Arc<Notify>,
     cancel: CancellationToken,
 ) {
     let mut state = ScannerState::default();
@@ -81,6 +83,7 @@ pub async fn run_state_scanner(
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {}
+            _ = scan_trigger.notified() => {}
         }
 
         match scan_once(&kv, &event_bus, &mut state).await {

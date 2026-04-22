@@ -524,7 +524,6 @@ async fn test_check_fails_when_lease_held() {
     let task_manager = Arc::new(TaskManager::new(
         app.state.repo.kv.clone(),
         "check-instance".to_string(),
-        None,
     ));
     let (task_id, progress_tx, cancel) = task_manager.create(TaskKind::Check).await;
 
@@ -567,7 +566,6 @@ async fn test_check_cancelled_before_start() {
     let task_manager = Arc::new(TaskManager::new(
         app.state.repo.kv.clone(),
         "check-instance".to_string(),
-        None,
     ));
     let (task_id, progress_tx, cancel) = task_manager.create(TaskKind::Check).await;
 
@@ -623,7 +621,6 @@ async fn test_check_cancelled_during_verification() {
     let task_manager = Arc::new(TaskManager::new(
         app.state.repo.kv.clone(),
         "check-instance".to_string(),
-        None,
     ));
     let (task_id, progress_tx, cancel) = task_manager.create(TaskKind::Check).await;
 

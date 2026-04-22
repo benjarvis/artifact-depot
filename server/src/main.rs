@@ -445,10 +445,12 @@ async fn async_main(cfg: config::Config) -> anyhow::Result<()> {
         let kv = state.repo.kv.clone();
         let event_bus = state.bg.event_bus.clone();
         let settings = state.settings.clone();
+        let scan_trigger = state.bg.scan_trigger.clone();
         let h = tokio::spawn(state_scanner::run_state_scanner(
             kv,
             event_bus,
             settings,
+            scan_trigger,
             cancel.clone(),
         ));
         worker_handles.push(("state_scanner", h));
