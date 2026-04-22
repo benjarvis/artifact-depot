@@ -10,11 +10,18 @@ export const useRepoStore = defineStore('repos', () => {
   const repos = ref<Repo[]>([])
   const loaded = ref(false)
 
+  // Proxy rows report the aggregate of their members, so summing every row
+  // would double-count each artifact (once in the member, once in the proxy).
+  // Exclude proxies so each unique artifact contributes once to the totals.
   const totalArtifacts = computed(() =>
-    repos.value.reduce((sum, r) => sum + r.artifact_count, 0)
+    repos.value
+      .filter(r => r.repo_type !== 'proxy')
+      .reduce((sum, r) => sum + r.artifact_count, 0)
   )
   const totalBytes = computed(() =>
-    repos.value.reduce((sum, r) => sum + r.total_bytes, 0)
+    repos.value
+      .filter(r => r.repo_type !== 'proxy')
+      .reduce((sum, r) => sum + r.total_bytes, 0)
   )
 
   function byName(name: string): Repo | undefined {

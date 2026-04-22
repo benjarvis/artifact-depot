@@ -17,11 +17,15 @@ const repoStore = useRepoStore()
 const repos = computed(() => repoStore.repos)
 const loading = computed(() => !repoStore.loaded)
 
-const pieRepos = computed(() => repos.value.map(r => ({
-  name: r.name,
-  artifact_count: r.artifact_count,
-  total_bytes: r.total_bytes,
-})))
+// Exclude proxies from the pie chart so the slices sum to the true storage
+// footprint: a proxy's bytes are already attributed to the member repos.
+const pieRepos = computed(() => repos.value
+  .filter(r => r.repo_type !== 'proxy')
+  .map(r => ({
+    name: r.name,
+    artifact_count: r.artifact_count,
+    total_bytes: r.total_bytes,
+  })))
 const animatedArtifactCount = useAnimatedValue(computed(() => repoStore.totalArtifacts))
 const animatedTotalBytes = useAnimatedValue(computed(() => repoStore.totalBytes))
 
