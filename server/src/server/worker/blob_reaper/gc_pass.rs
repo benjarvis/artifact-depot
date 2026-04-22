@@ -24,7 +24,7 @@ use depot_core::store::kv::KvStore;
 use depot_core::store_registry::StoreRegistry;
 use depot_core::update::UpdateSender;
 
-use super::bloom::{bloom_empty_like, bloom_union};
+use super::bloom::{bloom_empty_like, BloomAccumulator};
 use super::docker_gc::docker_gc;
 use super::repo_cleanup::expire_repo_artifacts;
 
@@ -145,9 +145,27 @@ pub async fn gc_pass(
                 p.completed_repos = 0;
             });
         }
+        let repo_concurrency = repo_loop_concurrency();
+        let sem = Arc::new(tokio::sync::Semaphore::new(repo_concurrency));
+        let mut js = JoinSet::new();
         for repo in &docker_repos_with_policy {
-            let (_, _, expired) = expire_repo_artifacts(kv.clone(), repo, cancel, updater).await?;
-            pre_expired += expired;
+            let kv = kv.clone();
+            let repo = (*repo).clone();
+            let cancel = cancel.cloned();
+            let updater = updater.clone();
+            let sem = Arc::clone(&sem);
+            js.spawn(async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| depot_core::error::DepotError::Internal(e.to_string()))?;
+                let (_, _, expired) =
+                    expire_repo_artifacts(kv, &repo, cancel.as_ref(), &updater).await?;
+                Ok::<u64, depot_core::error::DepotError>(expired)
+            });
+        }
+        while let Some(res) = js.join_next().await {
+            pre_expired += res??;
             if let Some(tx) = progress_tx {
                 tx.send_modify(|p| p.completed_repos += 1);
             }
@@ -175,10 +193,30 @@ pub async fn gc_pass(
         });
     }
     let mut docker_deleted = 0u64;
-    for repo in &docker_repos {
-        docker_deleted += docker_gc(kv.clone(), stores, repo, dry_run, cancel, updater).await?;
-        if let Some(tx) = progress_tx {
-            tx.send_modify(|p| p.completed_repos += 1);
+    if !docker_repos.is_empty() {
+        let repo_concurrency = repo_loop_concurrency();
+        let sem = Arc::new(tokio::sync::Semaphore::new(repo_concurrency));
+        let mut js = JoinSet::new();
+        for repo in &docker_repos {
+            let kv = kv.clone();
+            let stores = stores.clone();
+            let repo = (*repo).clone();
+            let cancel = cancel.cloned();
+            let updater = updater.clone();
+            let sem = Arc::clone(&sem);
+            js.spawn(async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| depot_core::error::DepotError::Internal(e.to_string()))?;
+                docker_gc(kv, &stores, &repo, dry_run, cancel.as_ref(), &updater).await
+            });
+        }
+        while let Some(res) = js.join_next().await {
+            docker_deleted += res??;
+            if let Some(tx) = progress_tx {
+                tx.send_modify(|p| p.completed_repos += 1);
+            }
         }
     }
 
@@ -215,7 +253,7 @@ pub async fn gc_pass(
 
     // Create a template BF with the right dimensions.
     let template = Arc::new(Bloom::new_for_fp_rate(estimated_total, 0.01));
-    let mut combined = bloom_empty_like(&template);
+    let mut combined_acc = BloomAccumulator::empty_like(&template);
     let mut scanned_artifacts = 0u64;
     let mut expired_artifacts = 0u64;
     let now = chrono::Utc::now();
@@ -247,8 +285,17 @@ pub async fn gc_pass(
     }
 
     // Scan all artifact partitions: build bloom filter + expire old artifacts.
-    for repo in &repos {
-        // Compute expiration cutoffs from repo config.
+    //
+    // Fan out `repos.len() * NUM_SHARDS` shard tasks into a single `JoinSet`
+    // guarded by an outer semaphore so we can exploit multi-core machines
+    // without overwhelming the KV backend with too many concurrent
+    // `scan_range` calls.  The main task drains results serially and folds
+    // each shard-local bloom filter into `combined_acc` — keeps the
+    // accumulator single-owner (no lock) and happens only once per shard.
+    let scan_concurrency = artifact_scan_concurrency();
+    let scan_sem = Arc::new(tokio::sync::Semaphore::new(scan_concurrency));
+    let mut js = JoinSet::new();
+    for (repo_idx, repo) in repos.iter().enumerate() {
         let max_age_cutoff = repo
             .cleanup_max_age_days
             .map(|d| now - chrono::Duration::days(d as i64));
@@ -258,7 +305,6 @@ pub async fn gc_pass(
 
         let repo_name = repo.name.clone();
         let store_name = repo.store.clone();
-        let mut js = JoinSet::new();
         for shard in 0..keys::NUM_SHARDS {
             let kv = kv.clone();
             let tmpl = template.clone();
@@ -267,7 +313,12 @@ pub async fn gc_pass(
             let cancel = cancel.cloned();
             let updater = updater.clone();
             let live_scanned = live_scanned.clone();
+            let sem = Arc::clone(&scan_sem);
             js.spawn(async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| depot_core::error::DepotError::Internal(e.to_string()))?;
                 let pk = keys::artifact_shard_pk(&repo_name, shard);
                 let mut local_bf = bloom_empty_like(&tmpl);
                 let mut local_scanned = 0u64;
@@ -358,20 +409,36 @@ pub async fn gc_pass(
                     }
                     tokio::task::yield_now().await;
                 }
-                Ok::<_, depot_core::error::DepotError>((local_bf, local_scanned, local_expired))
+                Ok::<_, depot_core::error::DepotError>((
+                    repo_idx,
+                    local_bf,
+                    local_scanned,
+                    local_expired,
+                ))
             });
         }
-        while let Some(res) = js.join_next().await {
-            let (local_bf, local_scanned, local_expired) = res??;
-            bloom_union(&mut combined, &local_bf);
-            scanned_artifacts += local_scanned;
-            expired_artifacts += local_expired;
-        }
+    }
 
-        if let Some(tx) = progress_tx {
-            tx.send_modify(|p| p.completed_repos += 1);
+    let mut shards_done_per_repo = vec![0u16; repos.len()];
+    while let Some(res) = js.join_next().await {
+        let (repo_idx, local_bf, local_scanned, local_expired) = res??;
+        combined_acc.or_from(&local_bf);
+        scanned_artifacts += local_scanned;
+        expired_artifacts += local_expired;
+        if let Some(slot) = shards_done_per_repo.get_mut(repo_idx) {
+            *slot += 1;
+            if *slot == keys::NUM_SHARDS {
+                if let Some(tx) = progress_tx {
+                    tx.send_modify(|p| p.completed_repos += 1);
+                }
+            }
         }
     }
+
+    // Freeze the combined filter so every downstream consumer can share
+    // the same allocation by cloning an `Arc` — avoids a per-shard-task
+    // bitmap clone in the sweep phase.
+    let combined = Arc::new(combined_acc.finalize());
 
     // Stop the progress ticker and do a final update.
     ticker_done.cancel();
@@ -439,13 +506,9 @@ pub async fn gc_pass(
         for shard in 0..keys::NUM_SHARDS {
             let kv = kv.clone();
             let store_name = store_name.clone();
-            let bf_bits = combined.bitmap().to_vec();
-            let bf_num_bits = combined.number_of_bits();
-            let bf_num_hashes = combined.number_of_hash_functions();
-            let bf_sip_keys = combined.sip_keys();
+            let bf = Arc::clone(&combined);
             let cancel = cancel.cloned();
             js.spawn(async move {
-                let bf = Bloom::from_existing(&bf_bits, bf_num_bits, bf_num_hashes, bf_sip_keys);
                 let pk = keys::blob_shard_pk(&store_name, shard);
                 let mut local_scanned = 0u64;
                 let mut local_scanned_bytes = 0u64;
@@ -567,48 +630,101 @@ pub async fn gc_pass(
 
         let store_name = store_rec.name.clone();
 
-        // Stream every blob in the store via the BlobStore trait and collect
-        // those whose blob_id doesn't hit the live-blob bloom filter.
-        let mut orphan_candidates: Vec<(String, u64)> = Vec::new();
-        match blob_store.scan_all_blobs().await {
-            Ok(mut stream) => {
-                while let Some(item) = stream.next().await {
-                    match item {
-                        Ok((blob_id, size)) => {
-                            if !combined.check(blob_id.as_bytes()) {
-                                orphan_candidates.push((blob_id, size));
+        // Fan out the blob-store walk across all 256 hex shards (256 on
+        // both FileBlobStore and S3BlobStore; falls back to one sequential
+        // stream for any backend that hasn't overridden `scan_shard_count`).
+        // Each worker checks candidate blob_ids against the shared
+        // `Arc<Bloom>` inline and forwards orphans to a single consumer that
+        // owns the grace-period state machine — no shared-state locks.
+        let shard_count = blob_store.scan_shard_count();
+        let walk_concurrency = blob_walk_concurrency();
+        let walk_sem = Arc::new(tokio::sync::Semaphore::new(walk_concurrency));
+        let (orph_tx, mut orph_rx) = tokio::sync::mpsc::channel::<(String, u64)>(2048);
+
+        let mut walk_js = JoinSet::new();
+        for shard in 0..shard_count {
+            let blob_store_task = blob_store.clone();
+            let bf = Arc::clone(&combined);
+            let sem = Arc::clone(&walk_sem);
+            let orph_tx = orph_tx.clone();
+            let cancel = cancel.cloned();
+            let store_name_log = store_name.clone();
+            walk_js.spawn(async move {
+                let _permit = match sem.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                    return;
+                }
+                match blob_store_task.scan_blobs_sharded(shard).await {
+                    Ok(mut stream) => {
+                        while let Some(item) = stream.next().await {
+                            match item {
+                                Ok((blob_id, size)) => {
+                                    if !bf.check(blob_id.as_bytes())
+                                        && orph_tx.send((blob_id, size)).await.is_err()
+                                    {
+                                        // Consumer closed — main task exited
+                                        // the sweep (e.g. cancellation).
+                                        return;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        store = %store_name_log,
+                                        shard = shard,
+                                        error = %e,
+                                        "blob store scan yielded error during orphan sweep"
+                                    );
+                                }
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                store = %store_name,
-                                error = %e,
-                                "blob store scan yielded error during orphan sweep"
-                            );
-                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            store = %store_name_log,
+                            shard = shard,
+                            error = %e,
+                            "blob store scan failed during orphan sweep"
+                        );
                     }
                 }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    store = %store_name,
-                    error = %e,
-                    "blob store scan failed during orphan sweep"
-                );
-            }
+            });
         }
+        // Drop the outer sender so `orph_rx.recv()` returns `None` once all
+        // worker clones are dropped.
+        drop(orph_tx);
 
-        // Apply two-pass grace period to orphan candidates.
+        // Consume orphan candidates as they arrive and apply the two-pass
+        // grace period. Single-owner mutation of `state.orphan_candidates`
+        // keeps the cap bookkeeping correct without a lock. `blob_store.delete`
+        // calls fan out via `delete_js` + `delete_sem` so we don't bottleneck
+        // on the per-blob round-trip latency of the backing store.
+        let delete_sem = Arc::new(tokio::sync::Semaphore::new(ORPHAN_DELETE_CONCURRENCY));
+        let mut delete_js: JoinSet<()> = JoinSet::new();
         let mut cap_warned = false;
-        for (blob_id, size) in orphan_candidates {
+        while let Some((blob_id, size)) = orph_rx.recv().await {
             let key = (store_name.clone(), blob_id.clone());
 
             match state.orphan_candidates.get(&key) {
                 Some(c) if current_pass - c.first_seen_pass >= 1 => {
                     // Candidate from a previous pass — delete the orphan.
                     if !dry_run {
-                        let _ = blob_store.delete(&blob_id).await;
+                        let blob_store_del = blob_store.clone();
+                        let sem = Arc::clone(&delete_sem);
+                        let blob_id_del = blob_id.clone();
+                        delete_js.spawn(async move {
+                            let _permit = match sem.acquire_owned().await {
+                                Ok(p) => p,
+                                Err(_) => return,
+                            };
+                            let _ = blob_store_del.delete(&blob_id_del).await;
+                        });
                     }
+                    // Match pre-parallel semantics: counter reflects
+                    // deletion *decisions* (delete errors were already
+                    // silently discarded with `let _ = …`).
                     orphaned_blobs_deleted += 1;
                     orphaned_blob_bytes_deleted += size;
                     state.orphan_candidates.remove(&key);
@@ -637,6 +753,11 @@ pub async fn gc_pass(
                 }
             }
         }
+
+        // Wait for in-flight orphan deletes and walk tasks to finish before
+        // moving on to the next store. Errors were already logged in-task.
+        while delete_js.join_next().await.is_some() {}
+        while walk_js.join_next().await.is_some() {}
     }
 
     Ok(GcStats {
@@ -651,3 +772,38 @@ pub async fn gc_pass(
         orphaned_blob_bytes_deleted,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Concurrency sizing
+// ---------------------------------------------------------------------------
+
+fn cpus() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+/// Outer concurrency for the (repo × shard) artifact-scan fan-out.
+/// Scaled to CPU count but clamped so we don't drown the KV backend.
+fn artifact_scan_concurrency() -> usize {
+    (cpus() * 4).clamp(32, 128)
+}
+
+/// Outer concurrency for per-repo phases (docker_gc, pre-expiration) that
+/// themselves fan out 256 shards internally. Keep the outer bound modest.
+fn repo_loop_concurrency() -> usize {
+    cpus().clamp(1, 16)
+}
+
+/// Outer concurrency for sharded blob-store walks. Filesystem walks are
+/// mostly I/O-bound (dirent + stat), S3 walks are network-bound; either way
+/// a moderate bound protects the backing store while still giving a healthy
+/// multi-core speedup over the old single-stream walk.
+fn blob_walk_concurrency() -> usize {
+    (cpus() * 2).clamp(4, 64)
+}
+
+/// Concurrency for per-store orphan-delete fan-out. Each permit holds one
+/// `blob_store.delete(..)` round-trip; 32 is tuned for good S3 parallelism
+/// without starving other stores of client connections.
+const ORPHAN_DELETE_CONCURRENCY: usize = 32;

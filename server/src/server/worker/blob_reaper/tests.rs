@@ -20,7 +20,7 @@ use depot_kv_redb::sharded_redb::ShardedRedbKvStore;
 
 use depot_core::update::UpdateSender;
 
-use super::bloom::{bloom_empty_like, bloom_union};
+use super::bloom::{bloom_empty_like, bloom_union, BloomAccumulator};
 use super::docker_gc::extract_manifest_refs;
 use super::gc_loop::run_blob_reaper;
 use super::gc_pass::{gc_pass, GcState};
@@ -46,6 +46,57 @@ fn bloom_filter_union() {
     bloom_union(&mut bf1, &bf2);
     assert!(bf1.check(b"alpha" as &[u8]));
     assert!(bf1.check(b"beta" as &[u8]));
+}
+
+/// Verify the zero-allocation `BloomAccumulator::or_from` path produces
+/// a bitmap byte-for-byte identical to the old `bloom_union` fold. This
+/// locks in the semantic equivalence used by the hot path in `gc_pass`.
+#[test]
+fn bloom_accumulator_matches_union() {
+    let template: Bloom<[u8]> = Bloom::new_for_fp_rate(1000, 0.01);
+
+    // Build several shard-local filters with overlapping and disjoint keys.
+    let mut shards: Vec<Bloom<[u8]>> = (0..8).map(|_| bloom_empty_like(&template)).collect();
+    for (i, shard) in shards.iter_mut().enumerate() {
+        for j in 0..64 {
+            shard.set(format!("shard-{i}-item-{j}").as_bytes());
+        }
+        // Shared keys that appear in multiple shards.
+        shard.set(b"shared-key-a" as &[u8]);
+        shard.set(b"shared-key-b" as &[u8]);
+    }
+
+    // Reference: fold via the allocating `bloom_union` path.
+    let mut via_union = bloom_empty_like(&template);
+    for s in &shards {
+        bloom_union(&mut via_union, s);
+    }
+
+    // New path: fold via `BloomAccumulator::or_from` and finalize.
+    let mut acc = BloomAccumulator::empty_like(&template);
+    for s in &shards {
+        acc.or_from(s);
+    }
+    let via_acc = acc.finalize();
+
+    assert_eq!(via_union.bitmap(), via_acc.bitmap());
+    assert_eq!(via_union.number_of_bits(), via_acc.number_of_bits());
+    assert_eq!(
+        via_union.number_of_hash_functions(),
+        via_acc.number_of_hash_functions()
+    );
+    assert_eq!(via_union.sip_keys(), via_acc.sip_keys());
+
+    // And verify the check() behaviour matches for a sample of inserted
+    // and non-inserted keys.
+    for i in 0..8 {
+        for j in 0..64 {
+            let key = format!("shard-{i}-item-{j}");
+            assert!(via_acc.check(key.as_bytes()));
+        }
+    }
+    assert!(via_acc.check(b"shared-key-a" as &[u8]));
+    assert!(via_acc.check(b"shared-key-b" as &[u8]));
 }
 
 #[test]
@@ -187,7 +238,9 @@ async fn gc_pass_deletes_orphaned_blobs() {
     let (kv, blobs, registry, _dir) = setup_test_env().await;
 
     // Create a blob record + file, but no artifact references it.
-    let blob_id = "orphan-blob-1";
+    // Use hex-prefixed blob_ids so they land inside the 256-shard hex
+    // layout used by the sharded blob-store walk.
+    let blob_id = "aa00orphanblob1";
     blobs.put(blob_id, b"orphaned data").await.unwrap();
     service::put_blob(
         kv.as_ref(),
@@ -259,7 +312,7 @@ async fn gc_pass_preserves_referenced_blobs() {
     create_referenced_blob(
         kv.as_ref(),
         &blobs,
-        "referenced-blob",
+        "dd03referencedblob",
         "ref_hash",
         b"important data",
     )
@@ -293,7 +346,7 @@ async fn gc_pass_preserves_referenced_blobs() {
     .await
     .unwrap();
 
-    assert!(blobs.exists("referenced-blob").await.unwrap());
+    assert!(blobs.exists("dd03referencedblob").await.unwrap());
     assert!(service::get_blob(kv.as_ref(), "default", "ref_hash")
         .await
         .unwrap()
@@ -307,7 +360,7 @@ async fn gc_orphan_blob_without_kv_record() {
 
     // Create a blob file on disk with NO KV BlobRecord (simulates a
     // crash between writing the file and creating the KV record).
-    let blob_id = "orphan-no-kv-1";
+    let blob_id = "bb01orphannokv1";
     blobs.put(blob_id, b"crash orphan").await.unwrap();
     assert!(blobs.exists(blob_id).await.unwrap());
 
@@ -355,7 +408,7 @@ async fn gc_orphan_grace_period_cleared_by_new_reference() {
     let (kv, blobs, registry, _dir) = setup_test_env().await;
 
     // Create an orphan blob.
-    let blob_id = "grace-blob-1";
+    let blob_id = "cc02graceblob1";
     blobs.put(blob_id, b"grace data").await.unwrap();
 
     let mut state = GcState::new();
@@ -453,10 +506,14 @@ fn test_extract_manifest_refs_empty_object() {
 async fn gc_orphan_candidate_cap() {
     let (kv, blobs, registry, _dir) = setup_test_env().await;
 
-    // Create 5 orphan blob files (no KV records, no artifacts).
-    for i in 0..5 {
+    // Create 5 orphan blob files (no KV records, no artifacts). Use hex
+    // prefixes so they're discoverable by the sharded blob-store walk.
+    for i in 0..5u8 {
         blobs
-            .put(&format!("orphan-cap-{i}"), format!("data-{i}").as_bytes())
+            .put(
+                &format!("{i:02x}{i:02x}orphancap{i}"),
+                format!("data-{i}").as_bytes(),
+            )
             .await
             .unwrap();
     }
@@ -496,8 +553,12 @@ async fn gc_orphan_candidate_cap() {
 
     // The 2 untracked orphans should still exist on disk.
     let mut remaining = 0;
-    for i in 0..5 {
-        if blobs.exists(&format!("orphan-cap-{i}")).await.unwrap() {
+    for i in 0..5u8 {
+        if blobs
+            .exists(&format!("{i:02x}{i:02x}orphancap{i}"))
+            .await
+            .unwrap()
+        {
             remaining += 1;
         }
     }
@@ -549,8 +610,8 @@ async fn gc_multiple_stores() {
     }
 
     // Create an orphan blob in each store.
-    blobs1.put("orphan-s1", b"store1-data").await.unwrap();
-    blobs2.put("orphan-s2", b"store2-data").await.unwrap();
+    blobs1.put("aa00orphans1", b"store1-data").await.unwrap();
+    blobs2.put("bb01orphans2", b"store2-data").await.unwrap();
 
     let mut state = GcState::new();
 
@@ -583,8 +644,8 @@ async fn gc_multiple_stores() {
     .await
     .unwrap();
     assert_eq!(stats.orphaned_blobs_deleted, 2);
-    assert!(!blobs1.exists("orphan-s1").await.unwrap());
-    assert!(!blobs2.exists("orphan-s2").await.unwrap());
+    assert!(!blobs1.exists("aa00orphans1").await.unwrap());
+    assert!(!blobs2.exists("bb01orphans2").await.unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -690,7 +751,7 @@ async fn run_blob_reaper_acquires_lease_and_runs_gc() {
     let (kv, blobs, registry, _dir) = setup_test_env().await;
 
     // Create an orphan blob — if GC runs, it will become a candidate.
-    blobs.put("reaper-orphan", b"orphan").await.unwrap();
+    blobs.put("ee04reaperorphan", b"orphan").await.unwrap();
 
     let cancel = CancellationToken::new();
     // gc_interval=0 so GC fires on the first 60s tick.
@@ -945,7 +1006,7 @@ async fn gc_pass_s3_orphan_scanning() {
     .unwrap();
 
     // Create an orphan blob in S3 (no artifact references it).
-    let orphan_id = "orphan-s3-blob-1";
+    let orphan_id = "ff00orphans3blob1";
     s3_store.put(orphan_id, b"s3 orphan data").await.unwrap();
     service::put_blob(
         kv.as_ref(),
