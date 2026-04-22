@@ -253,6 +253,14 @@ impl<T: KvStore> KvStore for InstrumentedKvStore<T> {
     fn is_single_node(&self) -> bool {
         self.inner.is_single_node()
     }
+
+    async fn compact(&self) -> error::Result<bool> {
+        let span = tracing::debug_span!("kv.compact", "db.system" = self.db_system);
+        let start = start_kv();
+        let result = self.inner.compact().instrument(span).await;
+        record_kv("compact", start, result.is_ok());
+        result
+    }
 }
 
 // ---------------------------------------------------------------------------

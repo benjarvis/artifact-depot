@@ -249,4 +249,30 @@ impl KvStore for ShardedRedbKvStore {
     fn is_single_node(&self) -> bool {
         true
     }
+
+    async fn compact(&self) -> error::Result<bool> {
+        // Fan out across shards in parallel. Each shard holds its own
+        // write lock independently, so transactions on shard A are not
+        // blocked while shard B compacts — the window during which any
+        // given partition key is stalled is the cost of one shard's
+        // compaction, not N of them. Trade: peak disk usage spikes to
+        // N × shard-size during compact (redb grows the file before
+        // shrinking). Accepted over longer blocking windows.
+        let futs = self
+            .shards
+            .iter()
+            .enumerate()
+            .map(|(i, shard)| async move { (i, shard.compact().await) });
+        let results = futures::future::join_all(futs).await;
+        let mut any = false;
+        for (i, res) in results {
+            match res {
+                Ok(c) => any |= c,
+                Err(e) => {
+                    tracing::warn!(shard = i, error = %e, "shard compaction failed");
+                }
+            }
+        }
+        Ok(any)
+    }
 }

@@ -67,8 +67,20 @@ enum WriteOp {
 }
 
 pub struct RedbKvStore {
-    db: Arc<Database>,
-    write_tx: Option<tokio::sync::mpsc::Sender<WriteOp>>,
+    /// Holds the Database and writer task handle. Read-path ops take the
+    /// read lock; compact takes the write lock and briefly swaps the
+    /// Database out to call `redb::Database::compact(&mut self)`.
+    inner: tokio::sync::RwLock<Inner>,
+    /// Kept outside the RwLock so `Drop` can synchronously take the
+    /// sender and let the writer task exit without needing an async
+    /// context.
+    write_tx: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<WriteOp>>>,
+}
+
+struct Inner {
+    /// `Some` except transiently during `compact()` (under the write lock)
+    /// when the Database is moved into a `spawn_blocking` task.
+    db: Option<Arc<Database>>,
     writer_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -77,7 +89,13 @@ impl Drop for RedbKvStore {
         // Drop the sender to close the channel — the writer task will see
         // `None` from recv() and exit after draining any in-flight batch,
         // allowing redb to shut down cleanly without WAL recovery on restart.
-        self.write_tx.take();
+        //
+        // Uses the std Mutex so Drop doesn't need to be async. Handle is
+        // not awaited here (best-effort); callers that need a clean
+        // handoff should call `close().await` first.
+        if let Ok(mut guard) = self.write_tx.lock() {
+            guard.take();
+        }
     }
 }
 
@@ -112,9 +130,11 @@ impl RedbKvStore {
         let writer_handle = tokio::spawn(writer_task(writer_db, write_rx));
 
         Ok(Self {
-            db,
-            write_tx: Some(write_tx),
-            writer_handle: Some(writer_handle),
+            inner: tokio::sync::RwLock::new(Inner {
+                db: Some(db),
+                writer_handle: Some(writer_handle),
+            }),
+            write_tx: std::sync::Mutex::new(Some(write_tx)),
         })
     }
 
@@ -122,33 +142,38 @@ impl RedbKvStore {
     /// Must be called from an async context. This ensures the redb database
     /// file lock is released before the store is re-opened.
     pub async fn close(&mut self) {
-        self.write_tx.take();
-        if let Some(h) = self.writer_handle.take() {
+        if let Ok(mut guard) = self.write_tx.lock() {
+            guard.take();
+        }
+        let mut inner = self.inner.write().await;
+        if let Some(h) = inner.writer_handle.take() {
             let _ = h.await;
         }
     }
 
     /// Send a write operation and await its result.
-    fn send_write<T: Send + 'static>(
+    ///
+    /// Holds the inner read lock across the await so compact (which takes
+    /// the write lock) cannot run until all in-flight writes have drained.
+    /// Keeps `try_send` (non-blocking) to avoid a deadlock where a full
+    /// channel would block under the read lock while compact waits for
+    /// the write lock.
+    async fn send_write<T: Send + 'static>(
         &self,
         op_fn: impl FnOnce(tokio::sync::oneshot::Sender<error::Result<T>>) -> WriteOp,
-    ) -> tokio::sync::oneshot::Receiver<error::Result<T>> {
+    ) -> error::Result<T> {
+        let _inner = self.inner.read().await;
         let (tx, rx) = tokio::sync::oneshot::channel();
         let op = op_fn(tx);
-        let sent = self
-            .write_tx
-            .as_ref()
-            .map(|s| s.try_send(op).is_ok())
-            .unwrap_or(false);
+        let sender = self.write_tx.lock().ok().and_then(|guard| guard.clone());
+        let sent = sender.map(|s| s.try_send(op).is_ok()).unwrap_or(false);
         if !sent {
-            let (tx2, rx2) = tokio::sync::oneshot::channel();
-            let _ = tx2.send(Err(DepotError::Storage(
+            return Err(DepotError::Storage(
                 "redb writer channel full or closed".into(),
                 Retryability::Permanent,
-            )));
-            return rx2;
+            ));
         }
-        rx
+        rx.await.map_err(|_| storage_err("writer dropped".into()))?
     }
 }
 
@@ -413,6 +438,17 @@ fn storage_err(msg: String) -> DepotError {
     DepotError::Storage(msg.into(), Retryability::Permanent)
 }
 
+/// Built when a read/write path observes `Inner::db == None` — impossible
+/// outside of compaction, and compaction holds the write lock that excludes
+/// readers/writers. Surfaced as a transient error rather than a panic so the
+/// caller can retry if the invariant ever slips.
+fn db_missing() -> DepotError {
+    DepotError::Storage(
+        "redb database unavailable (compaction in progress)".into(),
+        Retryability::Transient,
+    )
+}
+
 fn send_errors(batch: Vec<WriteOp>, err_msg: &str) {
     for op in batch {
         match op {
@@ -517,10 +553,9 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
         sk: Cow<'_, str>,
     ) -> error::Result<Option<Vec<u8>>> {
         let key = flat_key(&pk, &sk);
-        let txn = self
-            .db
-            .begin_read()
-            .map_err(DepotError::storage_permanent)?;
+        let inner = self.inner.read().await;
+        let db = inner.db.as_ref().ok_or_else(db_missing)?;
+        let txn = db.begin_read().map_err(DepotError::storage_permanent)?;
         let t = txn
             .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
             .map_err(DepotError::storage_permanent)?;
@@ -538,10 +573,9 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
         sk: Cow<'_, str>,
     ) -> error::Result<Option<(Vec<u8>, u64)>> {
         let key = flat_key(&pk, &sk);
-        let txn = self
-            .db
-            .begin_read()
-            .map_err(DepotError::storage_permanent)?;
+        let inner = self.inner.read().await;
+        let db = inner.db.as_ref().ok_or_else(db_missing)?;
+        let txn = db.begin_read().map_err(DepotError::storage_permanent)?;
         let t = txn
             .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
             .map_err(DepotError::storage_permanent)?;
@@ -565,13 +599,13 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
         let table = table.to_string();
         let key = flat_key(&pk, &sk);
         let value = value.to_vec();
-        let rx = self.send_write(|reply| WriteOp::Put {
+        self.send_write(|reply| WriteOp::Put {
             table,
             key,
             value,
             reply,
-        });
-        rx.await.map_err(|_| storage_err("writer dropped".into()))?
+        })
+        .await
     }
 
     async fn put_if_version(
@@ -585,21 +619,21 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
         let table = table.to_string();
         let key = flat_key(&pk, &sk);
         let value = value.to_vec();
-        let rx = self.send_write(|reply| WriteOp::PutIfVersion {
+        self.send_write(|reply| WriteOp::PutIfVersion {
             table,
             key,
             value,
             expected_version,
             reply,
-        });
-        rx.await.map_err(|_| storage_err("writer dropped".into()))?
+        })
+        .await
     }
 
     async fn delete(&self, table: &str, pk: Cow<'_, str>, sk: Cow<'_, str>) -> error::Result<bool> {
         let table = table.to_string();
         let key = flat_key(&pk, &sk);
-        let rx = self.send_write(|reply| WriteOp::Delete { table, key, reply });
-        rx.await.map_err(|_| storage_err("writer dropped".into()))?
+        self.send_write(|reply| WriteOp::Delete { table, key, reply })
+            .await
     }
 
     async fn delete_if_version(
@@ -611,13 +645,13 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
     ) -> error::Result<bool> {
         let table = table.to_string();
         let key = flat_key(&pk, &sk);
-        let rx = self.send_write(|reply| WriteOp::DeleteIfVersion {
+        self.send_write(|reply| WriteOp::DeleteIfVersion {
             table,
             key,
             expected_version,
             reply,
-        });
-        rx.await.map_err(|_| storage_err("writer dropped".into()))?
+        })
+        .await
     }
 
     async fn delete_returning(
@@ -628,8 +662,8 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
     ) -> error::Result<Option<Vec<u8>>> {
         let table = table.to_string();
         let key = flat_key(&pk, &sk);
-        let rx = self.send_write(|reply| WriteOp::DeleteReturning { table, key, reply });
-        rx.await.map_err(|_| storage_err("writer dropped".into()))?
+        self.send_write(|reply| WriteOp::DeleteReturning { table, key, reply })
+            .await
     }
 
     async fn delete_batch(&self, table: &str, keys: &[(&str, &str)]) -> error::Result<Vec<bool>> {
@@ -638,12 +672,12 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
         }
         let table = table.to_string();
         let flat_keys: Vec<Vec<u8>> = keys.iter().map(|(pk, sk)| flat_key(pk, sk)).collect();
-        let rx = self.send_write(|reply| WriteOp::DeleteBatch {
+        self.send_write(|reply| WriteOp::DeleteBatch {
             table,
             keys: flat_keys,
             reply,
-        });
-        rx.await.map_err(|_| storage_err("writer dropped".into()))?
+        })
+        .await
     }
 
     async fn put_batch(&self, table: &str, entries: &[(&str, &str, &[u8])]) -> error::Result<()> {
@@ -655,12 +689,12 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
             .iter()
             .map(|(pk, sk, value)| (flat_key(pk, sk), value.to_vec()))
             .collect();
-        let rx = self.send_write(|reply| WriteOp::PutBatch {
+        self.send_write(|reply| WriteOp::PutBatch {
             table,
             entries: flat_entries,
             reply,
-        });
-        rx.await.map_err(|_| storage_err("writer dropped".into()))?
+        })
+        .await
     }
 
     async fn scan_prefix(
@@ -676,10 +710,9 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
             p
         };
         let part_prefix_len = partition_prefix(&pk).len();
-        let txn = self
-            .db
-            .begin_read()
-            .map_err(DepotError::storage_permanent)?;
+        let inner = self.inner.read().await;
+        let db = inner.db.as_ref().ok_or_else(db_missing)?;
+        let txn = db.begin_read().map_err(DepotError::storage_permanent)?;
         let t = txn
             .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
             .map_err(DepotError::storage_permanent)?;
@@ -730,10 +763,9 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
                 prefix_range_end(&partition_prefix(&pk))
             }
         };
-        let txn = self
-            .db
-            .begin_read()
-            .map_err(DepotError::storage_permanent)?;
+        let inner = self.inner.read().await;
+        let db = inner.db.as_ref().ok_or_else(db_missing)?;
+        let txn = db.begin_read().map_err(DepotError::storage_permanent)?;
         let t = txn
             .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
             .map_err(DepotError::storage_permanent)?;
@@ -764,5 +796,207 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
 
     fn is_single_node(&self) -> bool {
         true
+    }
+
+    async fn compact(&self) -> error::Result<bool> {
+        // Hold the write lock for the full operation: excludes all reads
+        // and writes so no redb ReadTransaction or WriteTransaction is live
+        // when `Database::compact` runs. Also guarantees no writer-task
+        // batch is in flight across the restart boundary.
+        let mut inner = self.inner.write().await;
+
+        // Drop the sender and await the writer task so its `Arc<Database>`
+        // clone is released, making the main Arc the sole owner.
+        if let Ok(mut guard) = self.write_tx.lock() {
+            guard.take();
+        }
+        if let Some(h) = inner.writer_handle.take() {
+            let _ = h.await;
+        }
+
+        // Move the Database out of the Arc so we can pass it by owned
+        // value into spawn_blocking (compact is synchronous and can take
+        // seconds on large files).
+        let db_arc = inner.db.take().ok_or_else(db_missing)?;
+        let db = Arc::try_unwrap(db_arc)
+            .map_err(|_| storage_err("unexpected extra Arc<Database> owners".into()))?;
+
+        let (compact_res, db) = tokio::task::spawn_blocking(move || {
+            let mut db = db;
+            let res = db.compact();
+            (res, db)
+        })
+        .await
+        .map_err(|e| storage_err(format!("compact task panicked: {e}")))?;
+
+        // Restore the Database and restart the writer task.
+        inner.db = Some(Arc::new(db));
+        let (write_tx, write_rx) = tokio::sync::mpsc::channel::<WriteOp>(4096);
+        let writer_db = Arc::clone(inner.db.as_ref().ok_or_else(db_missing)?);
+        let writer_handle = tokio::spawn(writer_task(writer_db, write_rx));
+        inner.writer_handle = Some(writer_handle);
+        if let Ok(mut guard) = self.write_tx.lock() {
+            *guard = Some(write_tx);
+        }
+
+        let compacted = compact_res.map_err(|e| {
+            DepotError::Storage(
+                format!("redb compact failed: {e}").into(),
+                Retryability::Transient,
+            )
+        })?;
+        tracing::debug!(compacted, "redb shard compacted");
+        Ok(compacted)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use depot_core::store::kv::KvStore;
+
+    const TBL: &str = "artifacts";
+
+    fn db_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path().join("shard.redb")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compact_shrinks_file_after_bulk_delete() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = db_path(&dir);
+        let store = RedbKvStore::open(&path).unwrap();
+
+        // Write enough bytes that the file clearly grows beyond the
+        // minimum-page footprint.
+        let payload = vec![0xABu8; 1024];
+        let entries: Vec<(String, String)> = (0..2000)
+            .map(|i| (format!("p{:04}", i % 8), format!("k{:06}", i)))
+            .collect();
+        let refs: Vec<(&str, &str, &[u8])> = entries
+            .iter()
+            .map(|(pk, sk)| (pk.as_str(), sk.as_str(), payload.as_slice()))
+            .collect();
+        store.put_batch(TBL, &refs).await.unwrap();
+
+        let keys: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(pk, sk)| (pk.as_str(), sk.as_str()))
+            .collect();
+        store.delete_batch(TBL, &keys).await.unwrap();
+
+        let size_before = std::fs::metadata(&path).unwrap().len();
+        let compacted = store.compact().await.unwrap();
+        let size_after = std::fs::metadata(&path).unwrap().len();
+
+        assert!(compacted, "expected compact to report work done");
+        assert!(
+            size_after < size_before,
+            "file did not shrink: before={size_before} after={size_after}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn writes_work_after_compact() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = RedbKvStore::open(&db_path(&dir)).unwrap();
+
+        store
+            .put(TBL, "p".into(), "a".into(), b"one")
+            .await
+            .unwrap();
+        let (v1, ver1) = store
+            .get_versioned(TBL, "p".into(), "a".into())
+            .await
+            .unwrap()
+            .expect("key a present");
+        assert_eq!(v1, b"one");
+        assert_eq!(ver1, 1);
+
+        assert!(store.compact().await.is_ok());
+
+        // Writer must be restarted — a new put should succeed.
+        store
+            .put(TBL, "p".into(), "b".into(), b"two")
+            .await
+            .unwrap();
+        let (v2, ver2) = store
+            .get_versioned(TBL, "p".into(), "b".into())
+            .await
+            .unwrap()
+            .expect("key b present");
+        assert_eq!(v2, b"two");
+        assert_eq!(ver2, 1);
+
+        // Existing key and value survive compaction.
+        let (v1b, _) = store
+            .get_versioned(TBL, "p".into(), "a".into())
+            .await
+            .unwrap()
+            .expect("key a still present");
+        assert_eq!(v1b, b"one");
+
+        // A second put on the same key increments version monotonically.
+        store
+            .put(TBL, "p".into(), "a".into(), b"one-v2")
+            .await
+            .unwrap();
+        let (_, ver1b) = store
+            .get_versioned(TBL, "p".into(), "a".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ver1b, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn compact_serialises_with_concurrent_ops() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(RedbKvStore::open(&db_path(&dir)).unwrap());
+
+        // Seed some data.
+        for i in 0i32..100 {
+            store
+                .put(TBL, "p".into(), format!("k{i:03}").into(), &i.to_le_bytes())
+                .await
+                .unwrap();
+        }
+
+        // Race a compact with a flurry of reads and writes.
+        let s1 = Arc::clone(&store);
+        let reader = tokio::spawn(async move {
+            for i in 0i32..100 {
+                let v = s1
+                    .get(TBL, "p".into(), format!("k{i:03}").into())
+                    .await
+                    .unwrap();
+                assert!(v.is_some());
+            }
+        });
+        let s2 = Arc::clone(&store);
+        let writer = tokio::spawn(async move {
+            for i in 100i32..200 {
+                s2.put(TBL, "p".into(), format!("k{i:03}").into(), &i.to_le_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let s3 = Arc::clone(&store);
+        let compactor = tokio::spawn(async move { s3.compact().await });
+
+        reader.await.unwrap();
+        writer.await.unwrap();
+        compactor.await.unwrap().unwrap();
+
+        // Every written key must read back correctly after the dust settles.
+        for i in 0i32..200 {
+            let v = store
+                .get(TBL, "p".into(), format!("k{i:03}").into())
+                .await
+                .unwrap()
+                .expect("key present");
+            assert_eq!(v, i.to_le_bytes());
+        }
     }
 }

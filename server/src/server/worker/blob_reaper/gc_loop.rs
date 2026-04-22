@@ -142,9 +142,14 @@ pub async fn run_blob_reaper(
                 let start = std::time::Instant::now();
                 let gc_span = tracing::info_span!("gc_pass", pass = gs.pass + 1);
                 let _gc_guard = gc_span.enter();
+                let mut compact_needed = false;
                 match gc_pass(kv.clone(), &stores, &mut gs, Some(&pass_cancel), max_orphan_candidates, Some(&progress_tx), false, &updater).await {
                     Ok(stats) => {
                         let elapsed = start.elapsed();
+                        compact_needed = stats.deleted_dedup_refs > 0
+                            || stats.orphaned_blobs_deleted > 0
+                            || stats.cleaned_upload_sessions > 0
+                            || stats.docker_deleted > 0;
                         tracing::info!(
                             pass = gs.pass,
                             drained_repos = stats.drained_repos,
@@ -249,6 +254,33 @@ pub async fn run_blob_reaper(
                     &lease_holder,
                 )
                 .await;
+
+                // Compact the KV store after a pass that freed pages.
+                // Only meaningful on file-backed backends (redb);
+                // DynamoDB implements this as a no-op.
+                if compact_needed {
+                    let compact_start = std::time::Instant::now();
+                    let compact_result = kv.compact().await;
+                    let elapsed = compact_start.elapsed();
+                    histogram!("kv_compact_duration_seconds")
+                        .record(elapsed.as_secs_f64());
+                    match compact_result {
+                        Ok(compacted) => {
+                            tracing::info!(
+                                compacted,
+                                elapsed_ms = elapsed.as_millis() as u64,
+                                "post-GC KV compaction complete"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "post-GC KV compaction failed"
+                            );
+                            counter!("kv_compact_failures_total").increment(1);
+                        }
+                    }
+                }
             }
             _ = cancel.cancelled() => {
                 tracing::info!("GC worker shutting down");
