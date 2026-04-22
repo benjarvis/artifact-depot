@@ -73,7 +73,7 @@ fn bloom_accumulator_matches_union() {
     }
 
     // New path: fold via `BloomAccumulator::or_from` and finalize.
-    let mut acc = BloomAccumulator::empty_like(&template);
+    let acc = BloomAccumulator::empty_like(&template);
     for s in &shards {
         acc.or_from(s);
     }
@@ -97,6 +97,65 @@ fn bloom_accumulator_matches_union() {
     }
     assert!(via_acc.check(b"shared-key-a" as &[u8]));
     assert!(via_acc.check(b"shared-key-b" as &[u8]));
+}
+
+/// Verify that concurrent `or_from` calls across many threads produce the
+/// same combined filter as the sequential fold. This is the production
+/// scenario: the artifact scan has up to 128 shard tasks folding into a
+/// shared `Arc<BloomAccumulator>` simultaneously.
+#[test]
+fn bloom_accumulator_concurrent_or_matches_sequential() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let template: Bloom<[u8]> = Bloom::new_for_fp_rate(10_000, 0.01);
+    let n_shards = 32;
+    let items_per_shard = 64;
+
+    // Build shard-local filters with overlapping and disjoint keys.
+    let shards: Vec<Bloom<[u8]>> = (0..n_shards)
+        .map(|i| {
+            let mut bf = bloom_empty_like(&template);
+            for j in 0..items_per_shard {
+                bf.set(format!("shard-{i}-item-{j}").as_bytes());
+            }
+            bf.set(b"shared-key-a" as &[u8]);
+            bf.set(b"shared-key-b" as &[u8]);
+            bf
+        })
+        .collect();
+
+    // Sequential reference.
+    let seq_acc = BloomAccumulator::empty_like(&template);
+    for s in &shards {
+        seq_acc.or_from(s);
+    }
+    let seq = seq_acc.finalize();
+
+    // Concurrent fold.
+    let par_acc = Arc::new(BloomAccumulator::empty_like(&template));
+    let handles: Vec<_> = shards
+        .into_iter()
+        .map(|bf| {
+            let acc = Arc::clone(&par_acc);
+            thread::spawn(move || acc.or_from(&bf))
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let par = Arc::try_unwrap(par_acc)
+        .unwrap_or_else(|_| panic!("leaked Arc"))
+        .finalize();
+
+    assert_eq!(seq.bitmap(), par.bitmap());
+    for i in 0..n_shards {
+        for j in 0..items_per_shard {
+            assert!(par.check(format!("shard-{i}-item-{j}").as_bytes()));
+        }
+    }
+    assert!(par.check(b"shared-key-a" as &[u8]));
+    assert!(par.check(b"shared-key-b" as &[u8]));
 }
 
 #[test]
