@@ -71,6 +71,64 @@ test('stats header shows pie chart and summary cards when repos exist', async ({
   }
 })
 
+test('proxy repos are excluded from Repositories page storage totals', async ({ authedPage: page }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const memberName = `ddmem-${suffix}`
+  const proxyName = `ddgrp-${suffix}`
+  const token = await page.evaluate(() => localStorage.getItem('depot_token'))
+
+  await page.request.post('/api/v1/repositories', {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    data: { name: memberName, repo_type: 'hosted', format: 'raw', store: 'default' },
+  })
+  await page.request.post('/api/v1/repositories', {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    data: { name: proxyName, repo_type: 'proxy', format: 'raw', store: 'default', members: [memberName] },
+  })
+  try {
+    // Upload so the proxy has a non-zero aggregated byte count -- otherwise it
+    // would be filtered from the pie chart just because its total_bytes is 0.
+    await page.request.put(`/repository/${memberName}/some/file.bin`, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+      data: 'x'.repeat(100),
+    })
+
+    // Wait for both rows to reflect the upload. The proxy's count is
+    // aggregated live from members, so once the member shows 1 the proxy does too.
+    await expect.poll(async () => {
+      const resp = await page.request.get('/api/v1/repositories', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const repos = await resp.json()
+      const member = repos.find((r: { name: string }) => r.name === memberName)
+      const proxy = repos.find((r: { name: string }) => r.name === proxyName)
+      return member?.artifact_count === 1 && proxy?.artifact_count === 1
+    }, { timeout: 15000 }).toBeTruthy()
+
+    await page.reload()
+    await expect(page.locator('.stats-header .pie-card')).toBeVisible({ timeout: 10000 })
+
+    // Sanity: the member shows up in the table and in the pie legend.
+    await expect(page.locator('tbody tr td strong', { hasText: new RegExp(`^${memberName}$`) })).toBeVisible()
+    await expect(page.locator('.pie-container .legend-name', { hasText: new RegExp(`^${memberName}$`) })).toBeVisible()
+
+    // Core assertion: the proxy is visible in the table (it is a repository),
+    // but MUST NOT appear as a pie slice -- otherwise its bytes would be
+    // double-counted alongside the member's. This also implicitly validates
+    // that the Total Artifacts / Total Size cards exclude proxies, since
+    // they share the same computed filter in repoStore.ts.
+    await expect(page.locator('tbody tr td strong', { hasText: new RegExp(`^${proxyName}$`) })).toBeVisible()
+    await expect(page.locator('.pie-container .legend-name', { hasText: new RegExp(`^${proxyName}$`) })).toHaveCount(0)
+  } finally {
+    await page.request.delete(`/api/v1/repositories/${proxyName}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    await page.request.delete(`/api/v1/repositories/${memberName}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  }
+})
+
 test('create repository link navigates to form', async ({ authedPage: page, uiScreenshot }) => {
   await page.locator('a', { hasText: 'Create Repository' }).click()
   await expect(page).toHaveURL(/\/repositories\/new/)
