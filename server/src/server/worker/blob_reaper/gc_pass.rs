@@ -251,9 +251,14 @@ pub async fn gc_pass(
         });
     }
 
-    // Create a template BF with the right dimensions.
+    // Create a template BF with the right dimensions. The combined
+    // accumulator is wrapped in `Arc` so each shard task can fold its
+    // local filter into shared atomic bytes *inside* the task — this
+    // keeps peak memory bounded by the number of concurrent scans
+    // (rather than the total shard count) and parallelises the fold
+    // across cores.
     let template = Arc::new(Bloom::new_for_fp_rate(estimated_total, 0.01));
-    let mut combined_acc = BloomAccumulator::empty_like(&template);
+    let combined_acc = Arc::new(BloomAccumulator::empty_like(&template));
     let mut scanned_artifacts = 0u64;
     let mut expired_artifacts = 0u64;
     let now = chrono::Utc::now();
@@ -289,9 +294,13 @@ pub async fn gc_pass(
     // Fan out `repos.len() * NUM_SHARDS` shard tasks into a single `JoinSet`
     // guarded by an outer semaphore so we can exploit multi-core machines
     // without overwhelming the KV backend with too many concurrent
-    // `scan_range` calls.  The main task drains results serially and folds
-    // each shard-local bloom filter into `combined_acc` — keeps the
-    // accumulator single-owner (no lock) and happens only once per shard.
+    // `scan_range` calls.  Each task folds its shard-local bloom filter
+    // into the shared `Arc<BloomAccumulator>` via atomic OR *before*
+    // returning, so the 40+ MB local filter drops on task end. This caps
+    // in-flight BF memory at `concurrency * local_bf_size` rather than the
+    // `N_shards * local_bf_size` that join-time folding would imply — on
+    // stores with millions of artifacts the difference is the whole of
+    // system RAM.
     let scan_concurrency = artifact_scan_concurrency();
     let scan_sem = Arc::new(tokio::sync::Semaphore::new(scan_concurrency));
     let mut js = JoinSet::new();
@@ -314,6 +323,7 @@ pub async fn gc_pass(
             let updater = updater.clone();
             let live_scanned = live_scanned.clone();
             let sem = Arc::clone(&scan_sem);
+            let acc = Arc::clone(&combined_acc);
             js.spawn(async move {
                 let _permit = sem
                     .acquire_owned()
@@ -409,20 +419,22 @@ pub async fn gc_pass(
                     }
                     tokio::task::yield_now().await;
                 }
-                Ok::<_, depot_core::error::DepotError>((
-                    repo_idx,
-                    local_bf,
-                    local_scanned,
-                    local_expired,
-                ))
+
+                // Fold into the shared accumulator before dropping
+                // `local_bf`. This is the one write point that needs to
+                // happen before task end so the combined filter sees this
+                // shard's contributions.
+                acc.or_from(&local_bf);
+                drop(local_bf);
+
+                Ok::<_, depot_core::error::DepotError>((repo_idx, local_scanned, local_expired))
             });
         }
     }
 
     let mut shards_done_per_repo = vec![0u16; repos.len()];
     while let Some(res) = js.join_next().await {
-        let (repo_idx, local_bf, local_scanned, local_expired) = res??;
-        combined_acc.or_from(&local_bf);
+        let (repo_idx, local_scanned, local_expired) = res??;
         scanned_artifacts += local_scanned;
         expired_artifacts += local_expired;
         if let Some(slot) = shards_done_per_repo.get_mut(repo_idx) {
@@ -435,9 +447,15 @@ pub async fn gc_pass(
         }
     }
 
-    // Freeze the combined filter so every downstream consumer can share
-    // the same allocation by cloning an `Arc` — avoids a per-shard-task
-    // bitmap clone in the sweep phase.
+    // All tasks have returned, so every `Arc<BloomAccumulator>` clone they
+    // held has been dropped and we own the sole remaining reference.
+    // `try_unwrap` lets us move out of the accumulator to finalize without
+    // an extra 40+ MB clone.
+    let combined_acc = Arc::try_unwrap(combined_acc).map_err(|_| {
+        depot_core::error::DepotError::Internal(
+            "BloomAccumulator still has outstanding references after join".to_string(),
+        )
+    })?;
     let combined = Arc::new(combined_acc.finalize());
 
     // Stop the progress ticker and do a final update.

@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use depot_core::error::{self, DepotError, Retryability};
 use depot_core::store::kv::ScanResult;
 use redb::{Database, ReadableTable, TableDefinition};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Maximum number of write operations to coalesce into a single transaction.
@@ -75,6 +75,9 @@ pub struct RedbKvStore {
     /// sender and let the writer task exit without needing an async
     /// context.
     write_tx: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<WriteOp>>>,
+    /// Path to the backing file, retained so compaction can report
+    /// before/after file sizes in its telemetry.
+    path: PathBuf,
 }
 
 struct Inner {
@@ -135,6 +138,7 @@ impl RedbKvStore {
                 writer_handle: Some(writer_handle),
             }),
             write_tx: std::sync::Mutex::new(Some(write_tx)),
+            path: path.to_path_buf(),
         })
     }
 
@@ -814,6 +818,8 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
             let _ = h.await;
         }
 
+        let size_before = std::fs::metadata(&self.path).map(|m| m.len()).ok();
+
         // Move the Database out of the Arc so we can pass it by owned
         // value into spawn_blocking (compact is synchronous and can take
         // seconds on large files).
@@ -845,7 +851,14 @@ impl depot_core::store::kv::KvStore for RedbKvStore {
                 Retryability::Transient,
             )
         })?;
-        tracing::debug!(compacted, "redb shard compacted");
+        let size_after = std::fs::metadata(&self.path).map(|m| m.len()).ok();
+        tracing::info!(
+            path = %self.path.display(),
+            compacted,
+            size_before = size_before.unwrap_or(0),
+            size_after = size_after.unwrap_or(0),
+            "redb shard compact complete"
+        );
         Ok(compacted)
     }
 }
