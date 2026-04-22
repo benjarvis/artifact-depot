@@ -437,63 +437,34 @@ impl BlobStore for S3BlobStore {
     }
 
     async fn scan_all_blobs(&self) -> error::Result<BlobScanStream<'_>> {
-        // Linear ListObjectsV2 walk under `{prefix}blobs/`. This is a single
-        // ordered stream — for a bucket with millions of blobs the server
-        // side still paginates at 1000 objects/page, so ingesting them one
-        // by one into the caller's bloom filter is fine.
-        let client = self.client.clone();
-        let bucket = self.bucket.clone();
+        // Linear ListObjectsV2 walk under `{prefix}blobs/`. Callers that need
+        // parallelism should use `scan_blobs_sharded` to fan out across
+        // the 256 hex-byte top-level prefixes instead.
         let blob_prefix = if self.prefix.is_empty() {
             "blobs/".to_string()
         } else {
             format!("{}blobs/", self.prefix)
         };
+        Ok(self.list_prefix_stream(blob_prefix))
+    }
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<error::Result<(String, u64)>>(1024);
+    fn scan_shard_count(&self) -> u16 {
+        // Blob keys are `{prefix}blobs/XX/YY/<blob_id>`; the top-level hex
+        // byte shards cleanly into 256 disjoint S3 list prefixes.
+        256
+    }
 
-        tokio::spawn(async move {
-            let mut continuation_token: Option<String> = None;
-            loop {
-                let mut req = client
-                    .list_objects_v2()
-                    .bucket(&bucket)
-                    .prefix(&blob_prefix);
-                if let Some(token) = &continuation_token {
-                    req = req.continuation_token(token);
-                }
-                let resp = match req.send().await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(
-                            bucket = %bucket,
-                            prefix = %blob_prefix,
-                            error = %e,
-                            "S3 ListObjectsV2 failed during scan"
-                        );
-                        return;
-                    }
-                };
-
-                for obj in resp.contents() {
-                    let Some(key) = obj.key() else { continue };
-                    let blob_id = key.rsplit('/').next().unwrap_or("");
-                    if blob_id.is_empty() {
-                        continue;
-                    }
-                    let size = obj.size.unwrap_or(0) as u64;
-                    if tx.send(Ok((blob_id.to_string(), size))).await.is_err() {
-                        return;
-                    }
-                }
-
-                match resp.next_continuation_token() {
-                    Some(token) => continuation_token = Some(token.to_string()),
-                    None => break,
-                }
-            }
-        });
-
-        Ok(tokio_stream::wrappers::ReceiverStream::new(rx).boxed())
+    async fn scan_blobs_sharded(&self, shard: u16) -> error::Result<BlobScanStream<'_>> {
+        debug_assert!(
+            shard < 256,
+            "S3BlobStore shard {shard} out of range (0..256)"
+        );
+        let blob_prefix = if self.prefix.is_empty() {
+            format!("blobs/{shard:02x}/")
+        } else {
+            format!("{}blobs/{shard:02x}/", self.prefix)
+        };
+        Ok(self.list_prefix_stream(blob_prefix))
     }
 
     async fn health_check(&self) -> error::Result<()> {
@@ -568,6 +539,60 @@ impl BlobStore for S3BlobStore {
 }
 
 impl S3BlobStore {
+    /// Stream every object under `blob_prefix` via paginated ListObjectsV2.
+    /// Emits `(blob_id, size)` pairs; ignores entries whose key lacks a
+    /// trailing `/`-separated blob id.
+    fn list_prefix_stream<'a>(&self, blob_prefix: String) -> BlobScanStream<'a> {
+        let client = self.client.clone();
+        let bucket = self.bucket.clone();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<error::Result<(String, u64)>>(1024);
+
+        tokio::spawn(async move {
+            let mut continuation_token: Option<String> = None;
+            loop {
+                let mut req = client
+                    .list_objects_v2()
+                    .bucket(&bucket)
+                    .prefix(&blob_prefix);
+                if let Some(token) = &continuation_token {
+                    req = req.continuation_token(token);
+                }
+                let resp = match req.send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            bucket = %bucket,
+                            prefix = %blob_prefix,
+                            error = %e,
+                            "S3 ListObjectsV2 failed during scan"
+                        );
+                        return;
+                    }
+                };
+
+                for obj in resp.contents() {
+                    let Some(key) = obj.key() else { continue };
+                    let blob_id = key.rsplit('/').next().unwrap_or("");
+                    if blob_id.is_empty() {
+                        continue;
+                    }
+                    let size = obj.size.unwrap_or(0) as u64;
+                    if tx.send(Ok((blob_id.to_string(), size))).await.is_err() {
+                        return;
+                    }
+                }
+
+                match resp.next_continuation_token() {
+                    Some(token) => continuation_token = Some(token.to_string()),
+                    None => break,
+                }
+            }
+        });
+
+        tokio_stream::wrappers::ReceiverStream::new(rx).boxed()
+    }
+
     async fn health_check_inner(&self, check_id: &str, test_data: &[u8]) -> error::Result<()> {
         match self.get(check_id).await {
             Ok(Some(data)) if data == test_data => {}

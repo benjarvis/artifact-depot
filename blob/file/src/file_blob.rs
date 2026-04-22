@@ -61,6 +61,51 @@ fn round_up_align(n: usize) -> usize {
     (n + 4095) & !4095
 }
 
+/// Recursively walk a blob-layout directory, emitting `(blob_id, size)`
+/// pairs for every leaf file whose name matches the accumulated hex
+/// prefixes. Shared between `scan_all_blobs` (depth 2) and
+/// `scan_blobs_sharded` (depth 1, starting inside a fixed shard dir).
+fn walk_blob_level(
+    dir: &Path,
+    depth_remaining: usize,
+    prefixes: &mut Vec<String>,
+    tx: &tokio::sync::mpsc::Sender<error::Result<(String, u64)>>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    if depth_remaining == 0 {
+        for entry in entries.flatten() {
+            let fname = entry.file_name();
+            let blob_id = fname.to_string_lossy();
+            let valid = prefixes.iter().enumerate().all(|(i, prefix)| {
+                let start = i * 2;
+                blob_id.get(start..start + 2) == Some(prefix.as_str())
+            });
+            if !valid {
+                continue;
+            }
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if tx.blocking_send(Ok((blob_id.into_owned(), size))).is_err() {
+                return;
+            }
+        }
+    } else {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.len() != 2 || !entry.path().is_dir() {
+                continue;
+            }
+            prefixes.push(name_str.into_owned());
+            walk_blob_level(&entry.path(), depth_remaining - 1, prefixes, tx);
+            prefixes.pop();
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl BlobStore for FileBlobStore {
     async fn put(&self, blob_id: &str, data: &[u8]) -> error::Result<u64> {
@@ -301,60 +346,47 @@ impl BlobStore for FileBlobStore {
     }
 
     async fn scan_all_blobs(&self) -> error::Result<BlobScanStream<'_>> {
-        let root = self.root.clone();
-
         // Walk the 2-level directory structure (`<root>/ab/cd/<blob_id>`) in a
         // blocking task — std::fs is fine and walking is CPU+IO bound in
         // predictable ways. Stream items back through an mpsc channel so the
         // caller can process each blob as it's discovered.
         let (tx, rx) = tokio::sync::mpsc::channel::<error::Result<(String, u64)>>(1024);
+        let root = self.root.clone();
 
         tokio::task::spawn_blocking(move || {
-            const DIR_DEPTH: usize = 2;
+            let mut prefixes: Vec<String> = Vec::with_capacity(2);
+            walk_blob_level(&root, 2, &mut prefixes, &tx);
+        });
 
-            fn walk_level(
-                dir: &Path,
-                depth_remaining: usize,
-                prefixes: &mut Vec<String>,
-                tx: &tokio::sync::mpsc::Sender<error::Result<(String, u64)>>,
-            ) {
-                let entries = match std::fs::read_dir(dir) {
-                    Ok(e) => e,
-                    Err(_) => return,
-                };
+        Ok(tokio_stream::wrappers::ReceiverStream::new(rx).boxed())
+    }
 
-                if depth_remaining == 0 {
-                    for entry in entries.flatten() {
-                        let fname = entry.file_name();
-                        let blob_id = fname.to_string_lossy();
-                        let valid = prefixes.iter().enumerate().all(|(i, prefix)| {
-                            let start = i * 2;
-                            blob_id.get(start..start + 2) == Some(prefix.as_str())
-                        });
-                        if !valid {
-                            continue;
-                        }
-                        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                        if tx.blocking_send(Ok((blob_id.into_owned(), size))).is_err() {
-                            return;
-                        }
-                    }
-                } else {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name();
-                        let name_str = name.to_string_lossy();
-                        if name_str.len() != 2 || !entry.path().is_dir() {
-                            continue;
-                        }
-                        prefixes.push(name_str.into_owned());
-                        walk_level(&entry.path(), depth_remaining - 1, prefixes, tx);
-                        prefixes.pop();
-                    }
-                }
+    fn scan_shard_count(&self) -> u16 {
+        // Blob paths are `<root>/XX/YY/<blob_id>` so the top-level hex byte
+        // gives us 256 naturally-disjoint shards.
+        256
+    }
+
+    async fn scan_blobs_sharded(&self, shard: u16) -> error::Result<BlobScanStream<'_>> {
+        debug_assert!(
+            shard < 256,
+            "FileBlobStore shard {shard} out of range (0..256)"
+        );
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<error::Result<(String, u64)>>(1024);
+        let root = self.root.clone();
+        let prefix = format!("{shard:02x}");
+
+        tokio::task::spawn_blocking(move || {
+            let shard_dir = root.join(&prefix);
+            // Missing top-level hex directory just means no blobs in this
+            // shard yet — return an empty stream without error.
+            if !shard_dir.is_dir() {
+                return;
             }
-
-            let mut prefixes = Vec::with_capacity(DIR_DEPTH);
-            walk_level(&root, DIR_DEPTH, &mut prefixes, &tx);
+            // Only one level of hex directories remain (`YY/<blob_id>`).
+            let mut prefixes = vec![prefix];
+            walk_blob_level(&shard_dir, 1, &mut prefixes, &tx);
         });
 
         Ok(tokio_stream::wrappers::ReceiverStream::new(rx).boxed())
@@ -594,5 +626,51 @@ mod tests {
         assert_eq!(written, 9);
         let data = store.get(&id).await.unwrap().unwrap();
         assert_eq!(data, b"test data");
+    }
+
+    /// Seed blobs whose ids cover several different hex prefixes, then
+    /// assert that `scan_all_blobs` and the union of
+    /// `scan_blobs_sharded(0..256)` produce the same set. Additionally
+    /// verify shard streams are disjoint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scan_blobs_sharded_matches_scan_all() {
+        use std::collections::HashSet;
+
+        let (store, _dir) = make_store(false);
+
+        // Use blob_ids whose first hex byte spans many shards.
+        let ids: Vec<String> = (0u8..40)
+            .map(|i| format!("{i:02x}abcdef0123456789abcdef0123456789abcdef"))
+            .collect();
+        for id in &ids {
+            store.put(id, b"x").await.unwrap();
+        }
+
+        // Reference set via the existing sequential walk.
+        let mut all_ids: HashSet<String> = HashSet::new();
+        let mut stream = store.scan_all_blobs().await.unwrap();
+        while let Some(item) = stream.next().await {
+            let (id, _size) = item.unwrap();
+            all_ids.insert(id);
+        }
+
+        // Collect via sharded walks. Each shard stream must be a subset of
+        // its shard prefix; their union must equal `all_ids`.
+        assert_eq!(store.scan_shard_count(), 256);
+        let mut sharded_ids: HashSet<String> = HashSet::new();
+        for shard in 0..store.scan_shard_count() {
+            let prefix = format!("{shard:02x}");
+            let mut s = store.scan_blobs_sharded(shard).await.unwrap();
+            while let Some(item) = s.next().await {
+                let (id, _size) = item.unwrap();
+                assert!(
+                    id.starts_with(&prefix),
+                    "blob id {id} appeared in shard {shard} but does not start with {prefix}"
+                );
+                assert!(sharded_ids.insert(id), "sharded walk yielded a duplicate");
+            }
+        }
+
+        assert_eq!(sharded_ids, all_ids);
     }
 }

@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::error;
 
@@ -83,6 +83,29 @@ pub trait BlobStore: Send + Sync {
     /// unspecified, duplicates must not occur. Implementations may
     /// parallelise internally (e.g. S3 shards 256 ways across hex prefixes).
     async fn scan_all_blobs(&self) -> error::Result<BlobScanStream<'_>>;
+
+    /// Number of independent shards this store exposes for parallel scans.
+    ///
+    /// Returns 1 if sharded scanning is not supported. Blob GC uses this
+    /// count to fan out `scan_blobs_sharded` calls across cores.
+    fn scan_shard_count(&self) -> u16 {
+        1
+    }
+
+    /// Stream blobs in the given shard, where `shard` is in
+    /// `0..scan_shard_count()`. The union of all shard streams covers every
+    /// blob exactly once; individual shard streams must be disjoint.
+    ///
+    /// Default routes shard 0 to `scan_all_blobs` and yields empty for
+    /// other shards, preserving existing semantics for implementations that
+    /// don't override.
+    async fn scan_blobs_sharded(&self, shard: u16) -> error::Result<BlobScanStream<'_>> {
+        if shard == 0 {
+            self.scan_all_blobs().await
+        } else {
+            Ok(stream::empty().boxed())
+        }
+    }
 
     /// Put/get/delete/list round trip to verify the store is reachable and
     /// the caller has the required permissions.

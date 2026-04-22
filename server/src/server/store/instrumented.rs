@@ -368,6 +368,14 @@ impl<T: BlobStore> BlobStore for InstrumentedBlobStore<T> {
         self.inner.scan_all_blobs().await
     }
 
+    fn scan_shard_count(&self) -> u16 {
+        self.inner.scan_shard_count()
+    }
+
+    async fn scan_blobs_sharded(&self, shard: u16) -> error::Result<BlobScanStream<'_>> {
+        self.inner.scan_blobs_sharded(shard).await
+    }
+
     async fn health_check(&self) -> error::Result<()> {
         let span = tracing::debug_span!("blob.health_check");
         let start = start_blob();
