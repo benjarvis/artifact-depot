@@ -168,4 +168,11 @@ pub trait KvStore: Send + Sync {
     fn is_single_node(&self) -> bool {
         false
     }
+
+    /// Release freed pages to the filesystem. Only file-backed backends
+    /// (redb) implement this; DynamoDB has nothing to compact. Returns
+    /// `true` if the backend performed compaction work.
+    async fn compact(&self) -> error::Result<bool> {
+        Ok(false)
+    }
 }

@@ -211,6 +211,10 @@ impl<T: KvStore> KvStore for EncryptedKvStore<T> {
     fn is_single_node(&self) -> bool {
         self.inner.is_single_node()
     }
+
+    async fn compact(&self) -> error::Result<bool> {
+        self.inner.compact().await
+    }
 }
 
 /// Well-known canary key used to verify the encryption key on startup.

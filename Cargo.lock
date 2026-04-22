@@ -1811,6 +1811,7 @@ dependencies = [
  "depot-core",
  "futures",
  "redb",
+ "tempfile",
  "tokio",
  "tracing",
 ]
