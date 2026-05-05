@@ -7,4 +7,7 @@
 pub mod api;
 pub mod store;
 
-pub use store::{build_synthetic_chart, chart_path, parse_chart, HelmStore};
+pub use store::{
+    build_synthetic_chart, chart_path, enumerate_legacy_chart_relocations,
+    migrate_legacy_chart_paths, parse_chart, set_stale_flag, HelmStore,
+};

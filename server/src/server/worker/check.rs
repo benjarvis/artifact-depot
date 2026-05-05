@@ -27,7 +27,7 @@ use crate::server::worker::cluster::{self, LeaseGuard};
 use depot_core::service;
 use depot_core::store::keys;
 use depot_core::store::kv::KvStore;
-use depot_core::store::kv::{ArtifactKind, BlobRecord, RepoKind};
+use depot_core::store::kv::{ArtifactFormat, ArtifactKind, BlobRecord, RepoKind};
 use depot_core::store_registry::StoreRegistry;
 
 /// Maximum in-flight blob verification tasks.
@@ -1022,6 +1022,19 @@ pub async fn run_check(
             }
         }
 
+        if repo_config.format() == ArtifactFormat::Helm {
+            check_helm_canonicalization(
+                kv.as_ref(),
+                repo_config,
+                dry_run,
+                task_id,
+                task_manager.as_ref(),
+                &findings,
+                &fixed_count,
+            )
+            .await;
+        }
+
         if let depot_core::store::kv::RepoKind::Cache {
             ref upstream_url, ..
         } = repo_config.kind
@@ -1169,6 +1182,127 @@ pub async fn run_check(
     task_manager
         .mark_completed(task_id, TaskResult::Check(result))
         .await;
+}
+
+/// Find chart records still at the legacy `_charts/{name}/{name}-{version}.tgz`
+/// path and (in fix mode) relocate them to the unified
+/// `charts/{name}-{version}.tgz` path. On any successful relocation, set the
+/// helm metadata-stale flag so the next index fetch rebuilds.
+async fn check_helm_canonicalization(
+    kv: &dyn KvStore,
+    repo_config: &depot_core::store::kv::RepoConfig,
+    dry_run: bool,
+    task_id: TaskId,
+    task_manager: &TaskManager,
+    findings: &Arc<tokio::sync::Mutex<Vec<CheckFinding>>>,
+    fixed_count: &AtomicU64,
+) {
+    let repo_name = &repo_config.name;
+    let plan = match depot_format_helm::enumerate_legacy_chart_relocations(kv, repo_name).await {
+        Ok(p) => p,
+        Err(e) => {
+            task_manager
+                .append_log(
+                    task_id,
+                    format!(
+                        "Warning: helm legacy-chart enumeration failed for '{}': {}",
+                        repo_name, e
+                    ),
+                )
+                .await;
+            return;
+        }
+    };
+
+    if plan.is_empty() {
+        return;
+    }
+
+    {
+        let mut f = findings.lock().await;
+        for (old, new, _) in &plan {
+            f.push(CheckFinding {
+                repo: Some(repo_name.clone()),
+                path: old.clone(),
+                expected_hash: new.clone(),
+                actual_hash: None,
+                error: Some("helm chart at legacy _charts/ path".to_string()),
+                fixed: false,
+            });
+        }
+    }
+
+    for (old, new, _) in &plan {
+        task_manager
+            .append_log(
+                task_id,
+                format!(
+                    "Repo '{}': helm chart at '{}' should be at '{}'",
+                    repo_name, old, new
+                ),
+            )
+            .await;
+    }
+
+    if dry_run {
+        return;
+    }
+
+    let mut applied: u64 = 0;
+    for (old_path, new_path, record) in &plan {
+        if let Err(e) = service::put_artifact(kv, repo_name, new_path, record).await {
+            task_manager
+                .append_log(
+                    task_id,
+                    format!("Warning: write {}/{}: {}", repo_name, new_path, e),
+                )
+                .await;
+            continue;
+        }
+        if let Err(e) = service::delete_artifact(kv, repo_name, old_path).await {
+            // The new copy is in place; the next pass will retry the delete.
+            task_manager
+                .append_log(
+                    task_id,
+                    format!(
+                        "Warning: delete legacy {}/{}: {} (new copy at {} is in place)",
+                        repo_name, old_path, e, new_path
+                    ),
+                )
+                .await;
+        }
+        task_manager
+            .append_log(
+                task_id,
+                format!(
+                    "Fixed: relocated {}/{} -> {}",
+                    repo_name, old_path, new_path
+                ),
+            )
+            .await;
+
+        let mut f = findings.lock().await;
+        if let Some(finding) = f.iter_mut().rev().find(|f| {
+            f.repo.as_deref() == Some(repo_name)
+                && f.path == *old_path
+                && f.error.as_deref() == Some("helm chart at legacy _charts/ path")
+        }) {
+            finding.fixed = true;
+        }
+        applied += 1;
+    }
+
+    if applied > 0 {
+        if let Err(e) = depot_format_helm::set_stale_flag(kv, repo_name).await {
+            task_manager
+                .append_log(
+                    task_id,
+                    format!("Warning: set helm stale flag on '{}': {}", repo_name, e),
+                )
+                .await;
+        }
+        fixed_count.fetch_add(applied, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]

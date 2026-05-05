@@ -13,9 +13,10 @@
 //! - Stale flag at `_helm/metadata_stale` triggers atomic rebuild on next index fetch
 //!
 //! Historical note: charts used to be stored at `_charts/{name}/{name}-{version}.tgz`.
-//! `rebuild_index` performs a one-shot migration from the old path to the new path,
-//! and `is_metadata_stale` returns `true` while any old-path records remain so the
-//! first post-upgrade index fetch drives the migration.
+//! The integrity-check task relocates any leftover records to the unified
+//! `charts/{name}-{version}.tgz` path and sets the stale flag so the next
+//! index fetch picks them up. The on-fetch path itself is purely
+//! "rebuild index when stale" — it does not migrate.
 
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -26,9 +27,7 @@ use depot_core::error::{self, DepotError, Retryability};
 use depot_core::service;
 use depot_core::store::blob::BlobStore;
 use depot_core::store::kv::KvStore;
-use depot_core::store::kv::{
-    ArtifactKind, ArtifactRecord, HelmChartMeta, Pagination, CURRENT_RECORD_VERSION,
-};
+use depot_core::store::kv::{ArtifactKind, ArtifactRecord, HelmChartMeta, CURRENT_RECORD_VERSION};
 use depot_core::update::UpdateSender;
 
 /// Hex-encode helper.
@@ -187,8 +186,66 @@ pub fn chart_path(name: &str, version: &str) -> String {
 /// `is_metadata_stale`.
 pub(crate) const OLD_CHARTS_PREFIX: &str = "_charts/";
 
+/// Enumerate chart records still at the legacy `_charts/{name}/{name}-{version}.tgz`
+/// prefix that should be relocated to `charts/{name}-{version}.tgz`.
+///
+/// Returns `(old_path, new_path, record)` for each chart that needs to move.
+/// Cheap when there's nothing to move: the fold scan returns an empty vec.
+pub async fn enumerate_legacy_chart_relocations(
+    kv: &dyn KvStore,
+    repo: &str,
+) -> error::Result<Vec<(String, String, ArtifactRecord)>> {
+    service::fold_all_artifacts(
+        kv,
+        repo,
+        OLD_CHARTS_PREFIX,
+        Vec::<(String, String, ArtifactRecord)>::new,
+        |acc, old_path, record| {
+            if let ArtifactKind::HelmChart { ref helm } = record.kind {
+                let new_path = chart_path(&helm.name, &helm.version);
+                if new_path != old_path {
+                    acc.push((old_path.to_string(), new_path, record.clone()));
+                }
+            }
+            Ok(())
+        },
+        |mut a, mut b| {
+            a.append(&mut b);
+            a
+        },
+    )
+    .await
+}
+
+/// Migrate any chart records stored at the legacy `_charts/{name}/{name}-{version}.tgz`
+/// path to the unified `charts/{name}-{version}.tgz` path.
+///
+/// Ordering: put at new path first, then delete old. If a crash occurs between
+/// the two, the next call re-runs this step idempotently (same content
+/// overwrites at new; delete at old is idempotent). Safe to call on every
+/// index fetch — the underlying enumeration short-circuits when no legacy
+/// records exist.
+pub async fn migrate_legacy_chart_paths(kv: &dyn KvStore, repo: &str) -> error::Result<()> {
+    let legacy = enumerate_legacy_chart_relocations(kv, repo).await?;
+    if legacy.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        repo,
+        count = legacy.len(),
+        "helm: migrating legacy chart paths from _charts/ to charts/"
+    );
+
+    for (old_path, new_path, record) in legacy {
+        service::put_artifact(kv, repo, &new_path, &record).await?;
+        service::delete_artifact(kv, repo, &old_path).await?;
+    }
+    Ok(())
+}
+
 /// Set the metadata stale flag on a single Helm repo (no propagation).
-pub(crate) async fn set_stale_flag(kv: &dyn KvStore, repo: &str) -> error::Result<()> {
+pub async fn set_stale_flag(kv: &dyn KvStore, repo: &str) -> error::Result<()> {
     let now = depot_core::repo::now_utc();
     let flag = ArtifactRecord {
         schema_version: CURRENT_RECORD_VERSION,
@@ -412,58 +469,16 @@ impl<'a> HelmStore<'a> {
         Ok(record)
     }
 
-    /// Migrate any chart records stored at the legacy `_charts/{name}/{name}-{version}.tgz`
-    /// path to the unified `charts/{name}-{version}.tgz` path.
-    ///
-    /// Ordering: put at new path first, then delete old. If a crash occurs
-    /// between the two, the next rebuild re-runs this step idempotently
-    /// (same content overwrites at new, delete at old is idempotent).
-    ///
-    /// Cheap in the common case: the fold scan returns an empty vec when no
-    /// legacy records exist, so this is safe to call on every index fetch.
+    /// Method wrapper around the free `enumerate_legacy_chart_relocations`.
+    pub async fn enumerate_legacy_chart_relocations(
+        &self,
+    ) -> error::Result<Vec<(String, String, ArtifactRecord)>> {
+        enumerate_legacy_chart_relocations(self.kv, self.repo).await
+    }
+
+    /// Method wrapper around the free `migrate_legacy_chart_paths`.
     pub async fn migrate_legacy_chart_paths(&self) -> error::Result<()> {
-        let legacy: Vec<(String, ArtifactRecord)> = service::fold_all_artifacts(
-            self.kv,
-            self.repo,
-            OLD_CHARTS_PREFIX,
-            Vec::<(String, ArtifactRecord)>::new,
-            |acc, old_path, record| {
-                if matches!(&record.kind, ArtifactKind::HelmChart { .. }) {
-                    acc.push((old_path.to_string(), record.clone()));
-                }
-                Ok(())
-            },
-            |mut a, mut b| {
-                a.append(&mut b);
-                a
-            },
-        )
-        .await?;
-
-        if legacy.is_empty() {
-            return Ok(());
-        }
-
-        tracing::info!(
-            repo = self.repo,
-            count = legacy.len(),
-            "helm: migrating legacy chart paths from _charts/ to charts/"
-        );
-
-        for (old_path, record) in legacy {
-            let helm = match &record.kind {
-                ArtifactKind::HelmChart { helm } => helm,
-                _ => continue,
-            };
-            let new_path = chart_path(&helm.name, &helm.version);
-            // Skip no-op if somehow already at the new path (defensive).
-            if new_path == old_path {
-                continue;
-            }
-            service::put_artifact(self.kv, self.repo, &new_path, &record).await?;
-            service::delete_artifact(self.kv, self.repo, &old_path).await?;
-        }
-        Ok(())
+        migrate_legacy_chart_paths(self.kv, self.repo).await
     }
 
     /// Rebuild the `index.yaml` metadata file from all chart artifacts.
@@ -471,15 +486,12 @@ impl<'a> HelmStore<'a> {
     /// Lockless: index.yaml is a single inline artifact (atomic KV put).
     /// The stale flag is deleted first so uploads during rebuild re-set it.
     /// Returns `true` if the index content changed.
+    ///
+    /// This does **not** migrate legacy `_charts/` records — that's handled
+    /// by the integrity check, which sets the stale flag after relocating.
     pub async fn rebuild_index(&self) -> error::Result<bool> {
         // Delete stale flag first — any upload during rebuild re-sets it.
         self.clear_stale_flag().await?;
-
-        // One-shot migration: move any chart records still sitting at the old
-        // `_charts/{name}/{name}-{version}.tgz` path to the new flat
-        // `charts/{name}-{version}.tgz` path. Safe to re-run: `put_artifact`
-        // overwrites with the same content and `delete_artifact` is idempotent.
-        self.migrate_legacy_chart_paths().await?;
 
         // Scan all charts/ artifacts, folding into the index map.
         let entries: BTreeMap<String, Vec<HelmIndexEntry>> = service::fold_all_artifacts(
@@ -603,30 +615,15 @@ impl<'a> HelmStore<'a> {
 
     /// Check if metadata is stale.
     ///
-    /// Returns `true` when either the explicit `_helm/metadata_stale` flag is
-    /// set, or any chart record still lives at the legacy `_charts/` prefix.
-    /// The latter ensures the migration to the unified `charts/` path runs on
-    /// the first index fetch after an upgrade, without any startup hook or
-    /// schema-version bump.
+    /// Returns `true` when the explicit `_helm/metadata_stale` flag is set.
+    /// Uploads, deletes, and the integrity-check helm canonicalization phase
+    /// all set this flag; the on-fetch path's only job is to rebuild from it.
     pub async fn is_metadata_stale(&self) -> error::Result<bool> {
-        if service::get_artifact(self.kv, self.repo, "_helm/metadata_stale")
-            .await?
-            .is_some()
-        {
-            return Ok(true);
-        }
-        let probe = service::list_artifacts(
-            self.kv,
-            self.repo,
-            OLD_CHARTS_PREFIX,
-            &Pagination {
-                cursor: None,
-                offset: 0,
-                limit: 1,
-            },
+        Ok(
+            service::get_artifact(self.kv, self.repo, "_helm/metadata_stale")
+                .await?
+                .is_some(),
         )
-        .await?;
-        Ok(!probe.items.is_empty())
     }
 
     /// Set the metadata stale flag on this repo.
@@ -709,15 +706,17 @@ impl<'a> HelmStore<'a> {
         Ok(content_changed)
     }
 
-    /// Get a chart package by name and version.
-    pub async fn get_chart(
+    /// Get a chart package by URL filename — direct lookup at `charts/{filename}`.
+    ///
+    /// Avoids the brittle "parse `name-version.tgz`" heuristic on the way in.
+    /// The storage path matches what `index.yaml` advertises in `urls`, so the
+    /// filename received from the client is appended verbatim under `charts/`.
+    pub async fn get_chart_by_filename(
         &self,
-        name: &str,
-        version: &str,
+        filename: &str,
     ) -> error::Result<Option<(depot_core::store::blob::BlobReader, u64, ArtifactRecord)>> {
-        let path = chart_path(name, version);
-        let record = service::get_artifact(self.kv, self.repo, &path).await?;
-        let record = match record {
+        let path = format!("charts/{filename}");
+        let record = match service::get_artifact(self.kv, self.repo, &path).await? {
             Some(r) => r,
             None => return Ok(None),
         };
