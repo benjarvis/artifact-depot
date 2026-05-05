@@ -835,6 +835,172 @@ async fn test_check_read_error() {
 }
 
 // ===========================================================================
+// Helm: legacy `_charts/{name}/{name}-{version}.tgz` records get relocated
+// to the unified `charts/{name}-{version}.tgz` path during the check, and
+// the metadata-stale flag is set so the next index fetch rebuilds.
+// ===========================================================================
+
+async fn seed_legacy_helm_chart(app: &TestApp, repo: &str, name: &str, version: &str) -> String {
+    use depot_core::store::kv::{
+        ArtifactKind, ArtifactRecord, HelmChartMeta, CURRENT_RECORD_VERSION,
+    };
+
+    // Park a real blob so the orphan-blob phase doesn't sweep the record
+    // before the helm canonicalization phase runs.
+    let blob_id = uuid::Uuid::new_v4().to_string();
+    let blobs = app
+        .state
+        .repo
+        .stores
+        .get("default")
+        .await
+        .expect("default blob store");
+    blobs.put(&blob_id, b"placeholder").await.unwrap();
+
+    let helm = HelmChartMeta {
+        name: name.to_string(),
+        version: version.to_string(),
+        app_version: String::new(),
+        description: String::new(),
+        api_version: "v2".to_string(),
+        chart_type: String::new(),
+        keywords: Vec::new(),
+        home: String::new(),
+        sources: Vec::new(),
+        icon: String::new(),
+        deprecated: false,
+        sha256: "0".repeat(64),
+    };
+
+    let now = chrono::Utc::now();
+    let legacy_path = format!("_charts/{name}/{name}-{version}.tgz");
+    let record = ArtifactRecord {
+        schema_version: CURRENT_RECORD_VERSION,
+        id: uuid::Uuid::new_v4().to_string(),
+        size: 100,
+        content_type: "application/gzip".to_string(),
+        created_at: now,
+        updated_at: now,
+        last_accessed_at: now,
+        path: legacy_path.clone(),
+        internal: false,
+        kind: ArtifactKind::HelmChart { helm },
+        blob_id: Some(blob_id),
+        content_hash: None,
+        etag: None,
+    };
+    service::put_artifact(app.state.repo.kv.as_ref(), repo, &legacy_path, &record)
+        .await
+        .unwrap();
+
+    legacy_path
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_check_helm_relocates_legacy_charts_path() {
+    let app = TestApp::new().await;
+    app.create_helm_repo("helm-legacy").await;
+
+    let legacy_path =
+        seed_legacy_helm_chart(&app, "helm-legacy", "tigera-operator", "v3.28.0").await;
+    let new_path = "charts/tigera-operator-v3.28.0.tgz";
+
+    let token = app.admin_token();
+    let req = app.json_request(
+        Method::POST,
+        "/api/v1/tasks/check",
+        &token,
+        serde_json::json!({"dry_run": false}),
+    );
+    let (status, body) = app.call(req).await;
+    assert_eq!(status, StatusCode::CREATED, "start check failed: {body}");
+    let task_id = body["id"].as_str().unwrap().to_string();
+    let result = app.wait_for_task(&task_id).await;
+    assert_eq!(result["status"], "completed");
+
+    let kv = app.state.repo.kv.as_ref();
+    assert!(
+        service::get_artifact(kv, "helm-legacy", new_path)
+            .await
+            .unwrap()
+            .is_some(),
+        "expected canonical artifact at {new_path}"
+    );
+    assert!(
+        service::get_artifact(kv, "helm-legacy", &legacy_path)
+            .await
+            .unwrap()
+            .is_none(),
+        "expected legacy path {legacy_path} to be gone"
+    );
+    assert!(
+        service::get_artifact(kv, "helm-legacy", "_helm/metadata_stale")
+            .await
+            .unwrap()
+            .is_some(),
+        "stale flag should be set so next index fetch rebuilds"
+    );
+
+    let findings = result["result"]["findings"].as_array().unwrap();
+    let has_finding = findings.iter().any(|f| {
+        f["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("legacy _charts/")
+            && f["fixed"].as_bool().unwrap_or(false)
+    });
+    assert!(has_finding, "expected fixed legacy finding: {findings:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_check_helm_dry_run_does_not_relocate() {
+    let app = TestApp::new().await;
+    app.create_helm_repo("helm-dry").await;
+
+    let legacy_path = seed_legacy_helm_chart(&app, "helm-dry", "demo", "1.0.0").await;
+
+    let task_id = start_check(&app).await; // dry_run defaults to true
+    let result = app.wait_for_task(&task_id).await;
+    assert_eq!(result["status"], "completed");
+
+    let kv = app.state.repo.kv.as_ref();
+    assert!(
+        service::get_artifact(kv, "helm-dry", &legacy_path)
+            .await
+            .unwrap()
+            .is_some(),
+        "dry run must not move the artifact"
+    );
+    assert!(
+        service::get_artifact(kv, "helm-dry", "charts/demo-1.0.0.tgz")
+            .await
+            .unwrap()
+            .is_none(),
+        "dry run must not create the canonical entry"
+    );
+    assert!(
+        service::get_artifact(kv, "helm-dry", "_helm/metadata_stale")
+            .await
+            .unwrap()
+            .is_none(),
+        "dry run must not set the stale flag"
+    );
+
+    let findings = result["result"]["findings"].as_array().unwrap();
+    let has_unfixed = findings.iter().any(|f| {
+        f["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("legacy _charts/")
+            && !f["fixed"].as_bool().unwrap_or(false)
+    });
+    assert!(
+        has_unfixed,
+        "expected unfixed legacy finding under dry-run: {findings:?}"
+    );
+}
+
+// ===========================================================================
 // Repos without blobs — exercises coherency on blobless repos
 // ===========================================================================
 
