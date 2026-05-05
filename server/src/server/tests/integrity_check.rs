@@ -835,12 +835,18 @@ async fn test_check_read_error() {
 }
 
 // ===========================================================================
-// Helm: legacy `_charts/{name}/{name}-{version}.tgz` records get relocated
-// to the unified `charts/{name}-{version}.tgz` path during the check, and
+// Helm: legacy chart records (under `_charts/` or `charts/`) get relocated
+// to the canonical repo root `{name}-{version}.tgz` during the check, and
 // the metadata-stale flag is set so the next index fetch rebuilds.
 // ===========================================================================
 
-async fn seed_legacy_helm_chart(app: &TestApp, repo: &str, name: &str, version: &str) -> String {
+async fn seed_helm_chart_at_path(
+    app: &TestApp,
+    repo: &str,
+    storage_path: &str,
+    name: &str,
+    version: &str,
+) {
     use depot_core::store::kv::{
         ArtifactKind, ArtifactRecord, HelmChartMeta, CURRENT_RECORD_VERSION,
     };
@@ -873,7 +879,6 @@ async fn seed_legacy_helm_chart(app: &TestApp, repo: &str, name: &str, version: 
     };
 
     let now = chrono::Utc::now();
-    let legacy_path = format!("_charts/{name}/{name}-{version}.tgz");
     let record = ArtifactRecord {
         schema_version: CURRENT_RECORD_VERSION,
         id: uuid::Uuid::new_v4().to_string(),
@@ -882,28 +887,28 @@ async fn seed_legacy_helm_chart(app: &TestApp, repo: &str, name: &str, version: 
         created_at: now,
         updated_at: now,
         last_accessed_at: now,
-        path: legacy_path.clone(),
+        path: storage_path.to_string(),
         internal: false,
         kind: ArtifactKind::HelmChart { helm },
         blob_id: Some(blob_id),
         content_hash: None,
         etag: None,
     };
-    service::put_artifact(app.state.repo.kv.as_ref(), repo, &legacy_path, &record)
+    service::put_artifact(app.state.repo.kv.as_ref(), repo, storage_path, &record)
         .await
         .unwrap();
-
-    legacy_path
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_check_helm_relocates_legacy_charts_path() {
+async fn test_check_helm_relocates_deep_legacy_path() {
+    // Records at the oldest layout — `_charts/{name}/{name}-{version}.tgz` —
+    // get moved to the canonical root path.
     let app = TestApp::new().await;
     app.create_helm_repo("helm-legacy").await;
 
-    let legacy_path =
-        seed_legacy_helm_chart(&app, "helm-legacy", "tigera-operator", "v3.28.0").await;
-    let new_path = "charts/tigera-operator-v3.28.0.tgz";
+    let legacy = "_charts/tigera-operator/tigera-operator-v3.28.0.tgz";
+    seed_helm_chart_at_path(&app, "helm-legacy", legacy, "tigera-operator", "v3.28.0").await;
+    let canonical = "tigera-operator-v3.28.0.tgz";
 
     let token = app.admin_token();
     let req = app.json_request(
@@ -920,18 +925,18 @@ async fn test_check_helm_relocates_legacy_charts_path() {
 
     let kv = app.state.repo.kv.as_ref();
     assert!(
-        service::get_artifact(kv, "helm-legacy", new_path)
+        service::get_artifact(kv, "helm-legacy", canonical)
             .await
             .unwrap()
             .is_some(),
-        "expected canonical artifact at {new_path}"
+        "expected canonical artifact at {canonical}"
     );
     assert!(
-        service::get_artifact(kv, "helm-legacy", &legacy_path)
+        service::get_artifact(kv, "helm-legacy", legacy)
             .await
             .unwrap()
             .is_none(),
-        "expected legacy path {legacy_path} to be gone"
+        "expected legacy path {legacy} to be gone"
     );
     assert!(
         service::get_artifact(kv, "helm-legacy", "_helm/metadata_stale")
@@ -946,10 +951,58 @@ async fn test_check_helm_relocates_legacy_charts_path() {
         f["error"]
             .as_str()
             .unwrap_or("")
-            .contains("legacy _charts/")
+            .contains("legacy chart path")
             && f["fixed"].as_bool().unwrap_or(false)
     });
     assert!(has_finding, "expected fixed legacy finding: {findings:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_check_helm_relocates_charts_prefix_to_root() {
+    // Records at the intermediate `charts/{name}-{version}.tgz` layout also
+    // get moved to the canonical root path.
+    let app = TestApp::new().await;
+    app.create_helm_repo("helm-flat").await;
+
+    let legacy = "charts/redis-7.2.0.tgz";
+    seed_helm_chart_at_path(&app, "helm-flat", legacy, "redis", "7.2.0").await;
+    let canonical = "redis-7.2.0.tgz";
+
+    let token = app.admin_token();
+    let req = app.json_request(
+        Method::POST,
+        "/api/v1/tasks/check",
+        &token,
+        serde_json::json!({"dry_run": false}),
+    );
+    let (status, body) = app.call(req).await;
+    assert_eq!(status, StatusCode::CREATED, "start check failed: {body}");
+    let task_id = body["id"].as_str().unwrap().to_string();
+    let result = app.wait_for_task(&task_id).await;
+    assert_eq!(result["status"], "completed");
+
+    let kv = app.state.repo.kv.as_ref();
+    assert!(
+        service::get_artifact(kv, "helm-flat", canonical)
+            .await
+            .unwrap()
+            .is_some(),
+        "expected canonical artifact at {canonical}"
+    );
+    assert!(
+        service::get_artifact(kv, "helm-flat", legacy)
+            .await
+            .unwrap()
+            .is_none(),
+        "expected legacy path {legacy} to be gone"
+    );
+    assert!(
+        service::get_artifact(kv, "helm-flat", "_helm/metadata_stale")
+            .await
+            .unwrap()
+            .is_some(),
+        "stale flag should be set"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -957,7 +1010,8 @@ async fn test_check_helm_dry_run_does_not_relocate() {
     let app = TestApp::new().await;
     app.create_helm_repo("helm-dry").await;
 
-    let legacy_path = seed_legacy_helm_chart(&app, "helm-dry", "demo", "1.0.0").await;
+    let legacy = "_charts/demo/demo-1.0.0.tgz";
+    seed_helm_chart_at_path(&app, "helm-dry", legacy, "demo", "1.0.0").await;
 
     let task_id = start_check(&app).await; // dry_run defaults to true
     let result = app.wait_for_task(&task_id).await;
@@ -965,14 +1019,14 @@ async fn test_check_helm_dry_run_does_not_relocate() {
 
     let kv = app.state.repo.kv.as_ref();
     assert!(
-        service::get_artifact(kv, "helm-dry", &legacy_path)
+        service::get_artifact(kv, "helm-dry", legacy)
             .await
             .unwrap()
             .is_some(),
         "dry run must not move the artifact"
     );
     assert!(
-        service::get_artifact(kv, "helm-dry", "charts/demo-1.0.0.tgz")
+        service::get_artifact(kv, "helm-dry", "demo-1.0.0.tgz")
             .await
             .unwrap()
             .is_none(),
@@ -991,7 +1045,7 @@ async fn test_check_helm_dry_run_does_not_relocate() {
         f["error"]
             .as_str()
             .unwrap_or("")
-            .contains("legacy _charts/")
+            .contains("legacy chart path")
             && !f["fixed"].as_bool().unwrap_or(false)
     });
     assert!(

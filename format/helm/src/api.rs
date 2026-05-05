@@ -162,8 +162,9 @@ async fn handle_upload(
 }
 
 /// Handle a Helm request arriving on `/repository/{repo}/{path}`.
-/// Dispatches `index.yaml` and `charts/` paths to Helm-specific handlers,
-/// or returns `None` to fall through to the generic raw handler.
+/// Dispatches `index.yaml` and bare `.tgz` paths (charts at the repo root)
+/// to Helm-specific handlers, or returns `None` to fall through to the
+/// generic raw handler.
 pub async fn try_handle_repository_path(
     state: &FormatState,
     config: &RepoConfig,
@@ -178,15 +179,7 @@ pub async fn try_handle_repository_path(
             RepoType::Proxy => proxy_get_index(state, config).await,
         });
     }
-    if let Some(filename) = path.strip_prefix("charts/") {
-        return Some(match config.repo_type() {
-            RepoType::Hosted => hosted_download_chart(state, config, filename).await,
-            RepoType::Cache => cache_download_chart(state, config, filename).await,
-            RepoType::Proxy => proxy_download_chart(state, config, filename, 0).await,
-        });
-    }
-    // Also handle bare .tgz paths (without charts/ prefix) — some clients
-    // check for charts at the repo root rather than under charts/.
+    // Charts live at the repo root: any `*.tgz` is a chart download.
     if path.ends_with(".tgz") {
         return Some(match config.repo_type() {
             RepoType::Hosted => hosted_download_chart(state, config, path).await,

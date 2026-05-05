@@ -81,11 +81,7 @@ async fn test_upload_and_download() {
     assert_eq!(status, StatusCode::OK);
 
     // Download the chart
-    let req = app.auth_request(
-        Method::GET,
-        "/repository/helm-dl/charts/nginx-1.0.0.tgz",
-        &token,
-    );
+    let req = app.auth_request(Method::GET, "/repository/helm-dl/nginx-1.0.0.tgz", &token);
     let (status, downloaded) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, chart, "downloaded chart should match uploaded");
@@ -175,10 +171,9 @@ async fn test_overwrite_chart() {
 
 // Regression: chart filenames whose version doesn't start with a digit
 // (e.g. v-prefixed `tigera-operator-v3.28.0.tgz`) must still be downloadable.
-// Both the helm CLI and the UI's per-artifact download link fetch via the
-// same `/repository/{repo}/charts/{filename}` URL the index advertises, so
-// the download path looks up the chart by URL filename rather than parsing
-// it into (name, version).
+// Charts live at the repo root, so both the helm CLI and the UI's
+// per-artifact download link fetch via `/repository/{repo}/{filename}.tgz` —
+// the same URL `index.yaml` advertises in `urls`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_download_chart_with_v_prefixed_version() {
     let app = TestApp::new().await;
@@ -195,20 +190,20 @@ async fn test_download_chart_with_v_prefixed_version() {
     let (status, _) = app.call(req).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Index advertises charts/{name}-{version}.tgz — the same path on disk.
+    // Index advertises {name}-{version}.tgz at the root — same path on disk.
     let req = app.auth_request(Method::GET, "/repository/helm-vprefix/index.yaml", &token);
     let (status, body) = app.call_raw(req).await;
     assert_eq!(status, StatusCode::OK);
     let index = String::from_utf8(body).unwrap();
     assert!(
-        index.contains("charts/tigera-operator-v3.28.0.tgz"),
-        "index should advertise canonical url; got:\n{index}"
+        index.contains("tigera-operator-v3.28.0.tgz") && !index.contains("charts/"),
+        "index should advertise canonical root URL; got:\n{index}"
     );
 
-    // Download via /repository/{repo}/charts/{filename}.
+    // Download via /repository/{repo}/{filename}.tgz.
     let req = app.auth_request(
         Method::GET,
-        "/repository/helm-vprefix/charts/tigera-operator-v3.28.0.tgz",
+        "/repository/helm-vprefix/tigera-operator-v3.28.0.tgz",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -273,7 +268,7 @@ async fn test_download_nonexistent_chart() {
 
     let req = app.auth_request(
         Method::GET,
-        "/repository/helm-dl-404/charts/nonexistent-1.0.0.tgz",
+        "/repository/helm-dl-404/nonexistent-1.0.0.tgz",
         &token,
     );
     let (status, _) = app.call(req).await;
@@ -337,7 +332,7 @@ async fn test_proxy_download_searches_members() {
     // Download through proxy should find it in the second member
     let req = app.auth_request(
         Method::GET,
-        "/repository/helm-pd-proxy/charts/redis-1.0.0.tgz",
+        "/repository/helm-pd-proxy/redis-1.0.0.tgz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -422,7 +417,7 @@ async fn test_cache_downloads_chart_from_upstream() {
 
     let req = app.auth_request(
         Method::GET,
-        "/repository/helm-cache-dl/charts/cached-chart-1.0.0.tgz",
+        "/repository/helm-cache-dl/cached-chart-1.0.0.tgz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -432,7 +427,7 @@ async fn test_cache_downloads_chart_from_upstream() {
     // Second fetch should come from local cache.
     let req = app.auth_request(
         Method::GET,
-        "/repository/helm-cache-dl/charts/cached-chart-1.0.0.tgz",
+        "/repository/helm-cache-dl/cached-chart-1.0.0.tgz",
         &token,
     );
     let (status, downloaded2) = app.call_raw(req).await;
@@ -460,7 +455,7 @@ async fn test_proxy_upload_routes_to_member() {
     // Verify the chart ended up in the hosted member.
     let req = app.auth_request(
         Method::GET,
-        "/repository/helm-write-target/charts/routed-1.0.0.tgz",
+        "/repository/helm-write-target/routed-1.0.0.tgz",
         &token,
     );
     let (status, downloaded) = app.call_raw(req).await;
@@ -547,11 +542,7 @@ async fn test_hosted_download_chart() {
     assert_eq!(status, StatusCode::OK);
 
     // Download the chart back.
-    let req = app.auth_request(
-        Method::GET,
-        "/repository/helm-dl/charts/myapp-2.1.0.tgz",
-        &token,
-    );
+    let req = app.auth_request(Method::GET, "/repository/helm-dl/myapp-2.1.0.tgz", &token);
     let resp = app.call_resp(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
@@ -617,7 +608,7 @@ async fn test_proxy_download_from_member() {
     // Download through the proxy.
     let req = app.auth_request(
         Method::GET,
-        "/repository/helm-dl-p/charts/proxied-1.0.0.tgz",
+        "/repository/helm-dl-p/proxied-1.0.0.tgz",
         &token,
     );
     let (status, body) = app.call_raw(req).await;
@@ -649,7 +640,7 @@ async fn test_hosted_delete_triggers_index_rebuild() {
     // Delete the chart via the raw artifact handler.
     let req = app.auth_request(
         Method::DELETE,
-        "/repository/helm-del/charts/delme-1.0.0.tgz",
+        "/repository/helm-del/delme-1.0.0.tgz",
         &token,
     );
     let (status, _) = app.call_raw(req).await;
@@ -970,7 +961,8 @@ generated: \"2026-01-02T00:00:00Z\"
     );
 }
 
-// Note: relocation of legacy `_charts/{name}/{name}-{version}.tgz` records to
-// the unified `charts/{name}-{version}.tgz` path now lives in the integrity
-// check (server crate). The on-fetch path only rebuilds the index when the
-// `_helm/metadata_stale` flag is set; it does not migrate.
+// Note: relocation of legacy chart records (`_charts/{name}/{name}-{version}.tgz`
+// or `charts/{name}-{version}.tgz`) to the canonical root path
+// `{name}-{version}.tgz` now lives in the integrity check (server crate).
+// The on-fetch path only rebuilds the index when the `_helm/metadata_stale`
+// flag is set; it does not migrate.
