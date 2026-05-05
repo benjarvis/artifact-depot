@@ -709,15 +709,17 @@ impl<'a> HelmStore<'a> {
         Ok(content_changed)
     }
 
-    /// Get a chart package by name and version.
-    pub async fn get_chart(
+    /// Get a chart package by URL filename — direct lookup at `charts/{filename}`.
+    ///
+    /// Avoids the brittle "parse `name-version.tgz`" heuristic on the way in.
+    /// The storage path matches what `index.yaml` advertises in `urls`, so the
+    /// filename received from the client is appended verbatim under `charts/`.
+    pub async fn get_chart_by_filename(
         &self,
-        name: &str,
-        version: &str,
+        filename: &str,
     ) -> error::Result<Option<(depot_core::store::blob::BlobReader, u64, ArtifactRecord)>> {
-        let path = chart_path(name, version);
-        let record = service::get_artifact(self.kv, self.repo, &path).await?;
-        let record = match record {
+        let path = format!("charts/{filename}");
+        let record = match service::get_artifact(self.kv, self.repo, &path).await? {
             Some(r) => r,
             None => return Ok(None),
         };

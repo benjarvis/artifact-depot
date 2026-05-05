@@ -262,20 +262,13 @@ async fn hosted_download_chart(
     config: &RepoConfig,
     filename: &str,
 ) -> Response {
-    let (name, version) = match parse_chart_filename(filename) {
-        Some(nv) => nv,
-        None => {
-            return DepotError::BadRequest("invalid chart filename".into()).into_response();
-        }
-    };
-
     let blobs = match state.blob_store(&config.store).await {
         Ok(b) => b,
         Err(e) => return e.into_response(),
     };
     let store = helm_store_from_config(config, state, blobs.as_ref());
 
-    match store.get_chart(&name, &version).await {
+    match store.get_chart_by_filename(filename).await {
         Ok(Some((reader, size, _record))) => chart_stream_response(reader, size, filename),
         Ok(None) => DepotError::NotFound("chart not found".into()).into_response(),
         Err(e) => e.into_response(),
@@ -440,13 +433,6 @@ async fn cache_download_chart(
     config: &RepoConfig,
     filename: &str,
 ) -> Response {
-    let (name, version) = match parse_chart_filename(filename) {
-        Some(nv) => nv,
-        None => {
-            return DepotError::BadRequest("invalid chart filename".into()).into_response();
-        }
-    };
-
     let blobs = match state.blob_store(&config.store).await {
         Ok(b) => b,
         Err(e) => return e.into_response(),
@@ -465,7 +451,7 @@ async fn cache_download_chart(
 
     loop {
         // Check local cache first.
-        if let Ok(Some((reader, size, _record))) = store.get_chart(&name, &version).await {
+        if let Ok(Some((reader, size, _record))) = store.get_chart_by_filename(filename).await {
             return chart_stream_response(reader, size, filename);
         }
 
@@ -531,7 +517,7 @@ async fn cache_download_chart(
                 }
 
                 // Serve the committed blob.
-                match store.get_chart(&name, &version).await {
+                match store.get_chart_by_filename(filename).await {
                     Ok(Some((reader, size, _record))) => {
                         return chart_stream_response(reader, size, filename)
                     }
@@ -874,81 +860,4 @@ fn proxy_download_chart<'a>(
 
         DepotError::NotFound("chart not found in any member".into()).into_response()
     })
-}
-
-// =============================================================================
-// Helper: parse chart filename
-// =============================================================================
-
-/// Parse `name-version.tgz` into `(name, version)`.
-///
-/// The chart name can contain hyphens, so we find the last `-` where the
-/// remainder starts with a digit (i.e., looks like a version string).
-fn parse_chart_filename(filename: &str) -> Option<(String, String)> {
-    let stem = filename.strip_suffix(".tgz")?;
-
-    // Find the first hyphen where the right side starts with a digit —
-    // that's where the chart name ends and the version begins.
-    // e.g. "myriad-1.0.0-slord-38" → name="myriad", version="1.0.0-slord-38"
-    let mut first_valid = None;
-    for (i, _) in stem.match_indices('-') {
-        let (_, rest) = stem.split_at(i + 1);
-        if rest.starts_with(|c: char| c.is_ascii_digit()) {
-            first_valid = Some(i);
-            break;
-        }
-    }
-
-    let idx = first_valid?;
-    let (name, version_with_dash) = stem.split_at(idx);
-    let version = version_with_dash
-        .strip_prefix('-')
-        .unwrap_or(version_with_dash);
-
-    if name.is_empty() || version.is_empty() {
-        return None;
-    }
-
-    Some((name.to_string(), version.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_chart_filename_simple() {
-        let (name, version) = parse_chart_filename("mychart-1.2.3.tgz").unwrap();
-        assert_eq!(name, "mychart");
-        assert_eq!(version, "1.2.3");
-    }
-
-    #[test]
-    fn test_parse_chart_filename_hyphenated_name() {
-        let (name, version) = parse_chart_filename("my-cool-chart-0.1.0.tgz").unwrap();
-        assert_eq!(name, "my-cool-chart");
-        assert_eq!(version, "0.1.0");
-    }
-
-    #[test]
-    fn test_parse_chart_filename_prerelease() {
-        let (name, version) = parse_chart_filename("app-2.0.0-rc1.tgz").unwrap();
-        assert_eq!(name, "app");
-        assert_eq!(version, "2.0.0-rc1");
-    }
-
-    #[test]
-    fn test_parse_chart_filename_no_tgz() {
-        assert!(parse_chart_filename("mychart-1.0.0.tar.gz").is_none());
-    }
-
-    #[test]
-    fn test_parse_chart_filename_no_version() {
-        assert!(parse_chart_filename("mychart.tgz").is_none());
-    }
-
-    #[test]
-    fn test_parse_chart_filename_empty_name() {
-        assert!(parse_chart_filename("-1.0.0.tgz").is_none());
-    }
 }

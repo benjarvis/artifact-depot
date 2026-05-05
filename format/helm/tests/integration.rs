@@ -173,6 +173,49 @@ async fn test_overwrite_chart() {
     assert!(index.contains("1.0.0"), "missing version 1.0.0");
 }
 
+// Regression: chart filenames whose version doesn't start with a digit
+// (e.g. v-prefixed `tigera-operator-v3.28.0.tgz`) must still be downloadable.
+// Both the helm CLI and the UI's per-artifact download link fetch via the
+// same `/repository/{repo}/charts/{filename}` URL the index advertises, so
+// the download path looks up the chart by URL filename rather than parsing
+// it into (name, version).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_download_chart_with_v_prefixed_version() {
+    let app = TestApp::new().await;
+    app.create_helm_repo("helm-vprefix").await;
+    let token = app.admin_token();
+
+    let chart = build_synthetic_chart("tigera-operator", "v3.28.0", "operator").unwrap();
+    let req = helm_upload_request(
+        "helm-vprefix",
+        "tigera-operator-v3.28.0.tgz",
+        &chart,
+        &token,
+    );
+    let (status, _) = app.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Index advertises charts/{name}-{version}.tgz — the same path on disk.
+    let req = app.auth_request(Method::GET, "/repository/helm-vprefix/index.yaml", &token);
+    let (status, body) = app.call_raw(req).await;
+    assert_eq!(status, StatusCode::OK);
+    let index = String::from_utf8(body).unwrap();
+    assert!(
+        index.contains("charts/tigera-operator-v3.28.0.tgz"),
+        "index should advertise canonical url; got:\n{index}"
+    );
+
+    // Download via /repository/{repo}/charts/{filename}.
+    let req = app.auth_request(
+        Method::GET,
+        "/repository/helm-vprefix/charts/tigera-operator-v3.28.0.tgz",
+        &token,
+    );
+    let (status, body) = app.call_raw(req).await;
+    assert_eq!(status, StatusCode::OK, "v-prefixed version should download");
+    assert_eq!(body, chart);
+}
+
 // ===========================================================================
 // Invalid input
 // ===========================================================================
