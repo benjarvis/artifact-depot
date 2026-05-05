@@ -1184,10 +1184,10 @@ pub async fn run_check(
         .await;
 }
 
-/// Find chart records still at the legacy `_charts/{name}/{name}-{version}.tgz`
-/// path and (in fix mode) relocate them to the unified
-/// `charts/{name}-{version}.tgz` path. On any successful relocation, set the
-/// helm metadata-stale flag so the next index fetch rebuilds.
+/// Find chart records still at a legacy storage prefix (`_charts/...` or
+/// `charts/...`) and (in fix mode) relocate them to the canonical repo root
+/// `{name}-{version}.tgz`. On any successful relocation, set the helm
+/// metadata-stale flag so the next index fetch rebuilds.
 async fn check_helm_canonicalization(
     kv: &dyn KvStore,
     repo_config: &depot_core::store::kv::RepoConfig,
@@ -1226,7 +1226,7 @@ async fn check_helm_canonicalization(
                 path: old.clone(),
                 expected_hash: new.clone(),
                 actual_hash: None,
-                error: Some("helm chart at legacy _charts/ path".to_string()),
+                error: Some("helm chart at legacy chart path".to_string()),
                 fixed: false,
             });
         }
@@ -1285,7 +1285,7 @@ async fn check_helm_canonicalization(
         if let Some(finding) = f.iter_mut().rev().find(|f| {
             f.repo.as_deref() == Some(repo_name)
                 && f.path == *old_path
-                && f.error.as_deref() == Some("helm chart at legacy _charts/ path")
+                && f.error.as_deref() == Some("helm chart at legacy chart path")
         }) {
             finding.fixed = true;
         }

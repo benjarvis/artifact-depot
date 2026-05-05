@@ -6,17 +6,21 @@
 //!
 //! Maps Helm concepts onto our generic KV + blob store:
 //!
-//! - Chart packages (.tgz) stored at `charts/{name}-{version}.tgz` — the same
-//!   path that appears in the generated `index.yaml` `urls` field, so storage
-//!   and download URL are unified.
-//! - Metadata artifacts at `_helm/meta/index.yaml` (inline content)
-//! - Stale flag at `_helm/metadata_stale` triggers atomic rebuild on next index fetch
+//! - Chart packages (.tgz) stored at the repo root — `{name}-{version}.tgz` —
+//!   matching the canonical helm repository layout: charts and `index.yaml`
+//!   live side-by-side at the repo URL root. The same string appears in the
+//!   generated `index.yaml` `urls` field, so storage and download URL are
+//!   unified.
+//! - Metadata artifacts at `_helm/meta/index.yaml` (inline content), served
+//!   at the URL `/index.yaml`.
+//! - Stale flag at `_helm/metadata_stale` triggers atomic rebuild on next index fetch.
 //!
-//! Historical note: charts used to be stored at `_charts/{name}/{name}-{version}.tgz`.
-//! The integrity-check task relocates any leftover records to the unified
-//! `charts/{name}-{version}.tgz` path and sets the stale flag so the next
-//! index fetch picks them up. The on-fetch path itself is purely
-//! "rebuild index when stale" — it does not migrate.
+//! Historical note: charts have lived at two earlier paths —
+//! `_charts/{name}/{name}-{version}.tgz` and later `charts/{name}-{version}.tgz`.
+//! The integrity-check task relocates any leftover records from either prefix
+//! to the canonical root path and sets the stale flag so the next index fetch
+//! picks them up. The on-fetch path itself is purely "rebuild index when
+//! stale" — it does not migrate.
 
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -175,56 +179,63 @@ pub fn parse_chart(reader: impl Read, sha256: &str) -> error::Result<HelmChartMe
 
 /// Returns the KV path for a chart package.
 ///
-/// This matches the URL clients use to download the chart (as emitted in
-/// `index.yaml`'s `urls` field), so storage and fetch paths are unified.
+/// Charts live at the repo root — `{name}-{version}.tgz` — matching the
+/// canonical helm repository layout (charts and `index.yaml` side-by-side
+/// at the repo URL root). This is also exactly what `index.yaml`'s `urls`
+/// field advertises, so storage and download URL are unified.
 pub fn chart_path(name: &str, version: &str) -> String {
-    format!("charts/{name}-{version}.tgz")
+    format!("{name}-{version}.tgz")
 }
 
-/// Prefix where charts used to be stored prior to unifying storage and URL paths.
-/// Used by the migration pass in `rebuild_index` and the old-record probe in
-/// `is_metadata_stale`.
-pub(crate) const OLD_CHARTS_PREFIX: &str = "_charts/";
+/// Prefixes where charts have been stored historically. The integrity-check
+/// helm canonicalization phase relocates any leftover records to the root.
+/// In order from oldest to newest:
+///   1. `_charts/{name}/{name}-{version}.tgz` (per-chart subdirectory)
+///   2. `charts/{name}-{version}.tgz` (flat under `charts/`)
+pub(crate) const LEGACY_CHART_PREFIXES: &[&str] = &["_charts/", "charts/"];
 
-/// Enumerate chart records still at the legacy `_charts/{name}/{name}-{version}.tgz`
-/// prefix that should be relocated to `charts/{name}-{version}.tgz`.
+/// Enumerate chart records still at a legacy storage prefix that should be
+/// relocated to the canonical root path `{name}-{version}.tgz`.
 ///
 /// Returns `(old_path, new_path, record)` for each chart that needs to move.
-/// Cheap when there's nothing to move: the fold scan returns an empty vec.
+/// Cheap when there's nothing to move: the underlying scans return empty.
 pub async fn enumerate_legacy_chart_relocations(
     kv: &dyn KvStore,
     repo: &str,
 ) -> error::Result<Vec<(String, String, ArtifactRecord)>> {
-    service::fold_all_artifacts(
-        kv,
-        repo,
-        OLD_CHARTS_PREFIX,
-        Vec::<(String, String, ArtifactRecord)>::new,
-        |acc, old_path, record| {
-            if let ArtifactKind::HelmChart { ref helm } = record.kind {
-                let new_path = chart_path(&helm.name, &helm.version);
-                if new_path != old_path {
-                    acc.push((old_path.to_string(), new_path, record.clone()));
+    let mut all = Vec::new();
+    for prefix in LEGACY_CHART_PREFIXES {
+        let chunk: Vec<(String, String, ArtifactRecord)> = service::fold_all_artifacts(
+            kv,
+            repo,
+            prefix,
+            Vec::<(String, String, ArtifactRecord)>::new,
+            |acc, old_path, record| {
+                if let ArtifactKind::HelmChart { ref helm } = record.kind {
+                    let new_path = chart_path(&helm.name, &helm.version);
+                    if new_path != old_path {
+                        acc.push((old_path.to_string(), new_path, record.clone()));
+                    }
                 }
-            }
-            Ok(())
-        },
-        |mut a, mut b| {
-            a.append(&mut b);
-            a
-        },
-    )
-    .await
+                Ok(())
+            },
+            |mut a, mut b| {
+                a.append(&mut b);
+                a
+            },
+        )
+        .await?;
+        all.extend(chunk);
+    }
+    Ok(all)
 }
 
-/// Migrate any chart records stored at the legacy `_charts/{name}/{name}-{version}.tgz`
-/// path to the unified `charts/{name}-{version}.tgz` path.
+/// Migrate any chart records stored at a legacy prefix (`_charts/...` or
+/// `charts/...`) to the canonical root path `{name}-{version}.tgz`.
 ///
 /// Ordering: put at new path first, then delete old. If a crash occurs between
 /// the two, the next call re-runs this step idempotently (same content
-/// overwrites at new; delete at old is idempotent). Safe to call on every
-/// index fetch — the underlying enumeration short-circuits when no legacy
-/// records exist.
+/// overwrites at new; delete at old is idempotent).
 pub async fn migrate_legacy_chart_paths(kv: &dyn KvStore, repo: &str) -> error::Result<()> {
     let legacy = enumerate_legacy_chart_relocations(kv, repo).await?;
     if legacy.is_empty() {
@@ -234,7 +245,7 @@ pub async fn migrate_legacy_chart_paths(kv: &dyn KvStore, repo: &str) -> error::
     tracing::info!(
         repo,
         count = legacy.len(),
-        "helm: migrating legacy chart paths from _charts/ to charts/"
+        "helm: relocating legacy chart records to canonical root path"
     );
 
     for (old_path, new_path, record) in legacy {
@@ -487,17 +498,19 @@ impl<'a> HelmStore<'a> {
     /// The stale flag is deleted first so uploads during rebuild re-set it.
     /// Returns `true` if the index content changed.
     ///
-    /// This does **not** migrate legacy `_charts/` records — that's handled
-    /// by the integrity check, which sets the stale flag after relocating.
+    /// This does **not** relocate legacy chart records — that's handled by
+    /// the integrity check, which sets the stale flag after relocating.
     pub async fn rebuild_index(&self) -> error::Result<bool> {
         // Delete stale flag first — any upload during rebuild re-sets it.
         self.clear_stale_flag().await?;
 
-        // Scan all charts/ artifacts, folding into the index map.
+        // Charts live at the repo root, so scan all artifacts and filter by
+        // kind. In a helm repo the only non-chart records are `_helm/...`
+        // metadata, so this stays cheap.
         let entries: BTreeMap<String, Vec<HelmIndexEntry>> = service::fold_all_artifacts(
             self.kv,
             self.repo,
-            "charts/",
+            "",
             BTreeMap::<String, Vec<HelmIndexEntry>>::new,
             |acc, _sk, record| {
                 let helm = match &record.kind {
@@ -518,7 +531,7 @@ impl<'a> HelmStore<'a> {
                     icon: helm.icon.clone(),
                     deprecated: helm.deprecated,
                     digest: format!("sha256:{}", helm.sha256),
-                    urls: vec![format!("charts/{}-{}.tgz", helm.name, helm.version)],
+                    urls: vec![chart_path(&helm.name, &helm.version)],
                     created: record.created_at.to_rfc3339(),
                 };
 
@@ -706,17 +719,16 @@ impl<'a> HelmStore<'a> {
         Ok(content_changed)
     }
 
-    /// Get a chart package by URL filename — direct lookup at `charts/{filename}`.
+    /// Get a chart package by URL path — direct lookup at the repo root.
     ///
     /// Avoids the brittle "parse `name-version.tgz`" heuristic on the way in.
-    /// The storage path matches what `index.yaml` advertises in `urls`, so the
-    /// filename received from the client is appended verbatim under `charts/`.
+    /// Charts live at the root, so the path received from the client is the
+    /// storage path verbatim — exactly what `index.yaml` advertises in `urls`.
     pub async fn get_chart_by_filename(
         &self,
         filename: &str,
     ) -> error::Result<Option<(depot_core::store::blob::BlobReader, u64, ArtifactRecord)>> {
-        let path = format!("charts/{filename}");
-        let record = match service::get_artifact(self.kv, self.repo, &path).await? {
+        let record = match service::get_artifact(self.kv, self.repo, filename).await? {
             Some(r) => r,
             None => return Ok(None),
         };
@@ -787,8 +799,12 @@ mod tests {
 
     #[test]
     fn test_chart_path() {
-        assert_eq!(chart_path("nginx", "1.0.0"), "charts/nginx-1.0.0.tgz");
-        assert_eq!(chart_path("my-app", "2.1.3"), "charts/my-app-2.1.3.tgz");
+        assert_eq!(chart_path("nginx", "1.0.0"), "nginx-1.0.0.tgz");
+        assert_eq!(chart_path("my-app", "2.1.3"), "my-app-2.1.3.tgz");
+        assert_eq!(
+            chart_path("tigera-operator", "v3.28.0"),
+            "tigera-operator-v3.28.0.tgz"
+        );
     }
 
     #[test]
